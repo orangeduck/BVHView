@@ -1,0 +1,26 @@
+GLFW_ICON ICON "bvhview.ico"
+
+1 VERSIONINFO
+FILEVERSION     0,0,1,0
+PRODUCTVERSION  0,0,1,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080904E4"
+    BEGIN
+      VALUE "CompanyName", "Daniel Holden"
+      VALUE "FileDescription", "bvhview"
+      VALUE "FileVersion", "0.0.1"
+      VALUE "InternalName", "bvhview"
+      VALUE "LegalCopyright", "Daniel Holden"
+      VALUE "OriginalFilename", "bvhview.exe"
+      VALUE "ProductName", "bvhview"
+      VALUE "ProductVersion", "0.0.1"
+    END
+  END
+
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x809, 1252
+  END
+END

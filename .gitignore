@@ -1,0 +1,5 @@
+bvhview.exe
+examples/*
+*.log
+*__pycache__*
+*.exe
