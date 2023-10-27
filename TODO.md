@@ -1,10 +1,14 @@
 * Fix filtering of Shadows on capsule vs capsule
-* Color picker
-* Load settings from command line
+    * work out why performance is bad (use lookup table?)
 * Test on various BVH files
     * Axis flipping setting?
-    * Improve parser errors - Fix todos
-* Better Icon / Name?
-* Clean and organize functions properly
+* Web App
+    * Fix shader
+    * Icon/Logo
+    * Replace "Open" with Drag + Drop to Open
 * Comments/Docs
-* CI for windows/linux build?
+* Test on linux/mac
+* write blog post
+* write tweet
+* record some videos
+* push up fix for raygui

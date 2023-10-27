@@ -1,4 +1,7 @@
 bvhview.exe
+bvhview.html
+bvhview.js
+bvhview.wasm
 examples/*
 *.log
 *__pycache__*

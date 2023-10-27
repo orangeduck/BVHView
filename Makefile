@@ -9,9 +9,9 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
     CC = gcc
     EXT = .exe
     ifeq ($(BUILD_MODE),RELEASE)
-        CFLAGS ?= $(DEFINES) -Wall -mwindows -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR) 
+        CFLAGS ?= bvhview.res $(DEFINES) -Wall -mwindows -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR) 
 	else
-        CFLAGS ?= $(DEFINES) -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR) 
+        CFLAGS ?= bvhview.res $(DEFINES) -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR) 
 	endif
     LIBS = -lraylib -lopengl32 -lgdi32 -lwinmm
 endif
@@ -19,7 +19,11 @@ endif
 ifeq ($(PLATFORM),PLATFORM_WEB)
     CC = emcc
     EXT = .html
-    CFLAGS ?= $(DEFINES) $(RAYLIB_DIR)/raylib/src/libraylib.bc -Os -s USE_GLFW=3 -s FORCE_FILESYSTEM=1 -s MAX_WEBGL_VERSION=2 -s ALLOW_MEMORY_GROWTH=1 --preload-file $(dir $<)resources@resources --shell-file ./shell.html $(INCLUDE_DIR) $(LIBRARY_DIR)
+    ifeq ($(BUILD_MODE),RELEASE)
+        CFLAGS ?= $(DEFINES) $(RAYLIB_DIR)/raylib/src/libraylib.a -Os -s USE_GLFW=3 -s FORCE_FILESYSTEM=1 -s MAX_WEBGL_VERSION=2 -s ALLOW_MEMORY_GROWTH=1 --shell-file ./shell.html $(INCLUDE_DIR) $(LIBRARY_DIR)
+    else
+        CFLAGS ?= $(DEFINES) $(RAYLIB_DIR)/raylib/src/libraylib.a -Os -s ASSERTIONS -s USE_GLFW=3 -s FORCE_FILESYSTEM=1 -s MAX_WEBGL_VERSION=2 -s ALLOW_MEMORY_GROWTH=1 --shell-file ./shell.html $(INCLUDE_DIR) $(LIBRARY_DIR)
+    endif
 endif
 
 SOURCE = $(wildcard *.c)
@@ -30,7 +34,7 @@ HEADER = $(wildcard *.h)
 all: bvhview
 
 bvhview: $(SOURCE) $(HEADER)
-	$(CC) -o $@$(EXT) $(SOURCE) bvhview.res $(CFLAGS) $(LIBS) 
+	$(CC) -o $@$(EXT) $(SOURCE) $(CFLAGS) $(LIBS) 
 
 clean:
 	rm bvhview$(EXT)

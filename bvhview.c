@@ -9,6 +9,11 @@
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 
+#if defined(PLATFORM_WEB)
+#include <emscripten/emscripten.h>
+static int errno;
+#endif
+
 //--------------------------------------
 // Additional C Functions
 //--------------------------------------
@@ -195,48 +200,159 @@ static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
 }
 
 //--------------------------------------
+// Command Line Args
+//--------------------------------------
+
+static inline char* ArgFind(int argc, char** argv, const char* name)
+{
+    for (int i = 1; i < argc; i++)
+    {
+        if (strlen(argv[i]) > 4 &&
+          argv[i][0] == '-' &&
+          argv[i][1] == '-' &&
+          strstr(argv[i] + 2, name) == argv[i] + 2)
+        { 
+            char* argStart = strchr(argv[i], '=');
+            return argStart ? argStart + 1 : NULL;
+        }
+    }
+    
+    return NULL;
+}
+
+static inline float ArgFloat(int argc, char** argv, const char* name, float defaultValue)
+{ 
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+    
+    errno = 0;
+    float output = strtof(value, NULL);
+    if (errno == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return output; }
+    
+    printf("ERROR: Could not parse value '%s' given for option '%s' as float\n", value, name);
+    return defaultValue;
+}
+
+static inline int ArgInt(int argc, char** argv, const char* name, int defaultValue)
+{ 
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+
+    errno = 0;
+    int output = (int)strtol(value, NULL, 10);
+    if (errno == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return output; }
+    
+    printf("ERROR: Could not parse value '%s' given for option '%s' as int\n", value, name);
+    return defaultValue;
+}
+
+static inline int ArgBool(int argc, char** argv, const char* name, bool defaultValue)
+{ 
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+    if (strcmp(value, "true") == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return true; }
+    if (strcmp(value, "false") == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return false; }
+    
+    printf("ERROR: Could not parse value '%s' given for option '%s' as bool\n", value, name);
+    return defaultValue;
+}
+
+static inline int ArgEnum(int argc, char** argv, const char* name, int optionCount, const char* options[], int defaultValue)
+{ 
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+
+    for (int i = 0; i < optionCount; i++)
+    {
+        if (strcmp(value, options[i]) == 0)
+        {
+            printf("INFO: Parsed option '%s' as '%s'\n", name, value);
+            return i;
+        }
+    }
+    
+    printf("ERROR: Could not parse value '%s' given for option '%s' as enum\n", value, name);
+    return defaultValue;
+}
+
+static inline const char* ArgStr(int argc, char** argv, const char* name, const char* defaultValue)
+{ 
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+
+    printf("INFO: Parsed option '%s' as '%s'\n", name, value);
+    return value;
+}
+
+static inline Color ArgColor(int argc, char** argv, const char* name, Color defaultValue)
+{ 
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+
+    int cx, cy, cz;
+    if (sscanf(value, "%i,%i,%i", &cx, &cy, &cz) == 3)
+    {
+        printf("INFO: Parsed option '%s' as '%s'\n", name, value);
+        return (Color){ clamp(cx, 0, 255), clamp(cy, 0, 255), clamp(cz, 0, 255) };
+    }
+
+    printf("ERROR: Could not parse value '%s' given for option '%s' as color\n", value, name);
+    return defaultValue;
+}
+
+//--------------------------------------
 // Camera
 //--------------------------------------
 
-static inline float OrbitCameraUpdateAzimuth(float azimuth, float mouseDx, float dt)
-{
-    return azimuth + 1.0f * dt * -mouseDx;
-}
+typedef struct {
+  
+    Camera3D cam3d;
+    float azimuth;
+    float altitude;
+    float distance;
+    bool track;
+    int trackBone;
+  
+} OrbitCamera;
 
-static inline float OrbitCameraUpdateAltitude(float altitude, float mouseDy, float dt)
+static inline void OrbitCameraInit(OrbitCamera* camera, int argc, char** argv)
 {
-    return clampf(altitude + 1.0f * dt * mouseDy, 0.0, 0.4f * PIf);
-}
-
-static inline float OrbitCameraUpdateDistance(float distance, float dt)
-{
-    return clampf(distance +  20.0f * dt * -GetMouseWheelMove(), 0.1f, 100.0f);
+    memset(&camera->cam3d, 0, sizeof(Camera3D));
+    camera->cam3d.position = (Vector3){ 2.0f, 3.0f, 5.0f };
+    camera->cam3d.target = (Vector3){ -0.5f, 1.0f, 0.0f };
+    camera->cam3d.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+    camera->cam3d.fovy = ArgFloat(argc, argv, "cameraFOV", 45.0f);
+    camera->cam3d.projection = CAMERA_PERSPECTIVE;
+    
+    camera->azimuth = ArgFloat(argc, argv, "cameraAzimuth", 0.0f);
+    camera->altitude = ArgFloat(argc, argv, "cameraAltitude", 0.4f);
+    camera->distance = ArgFloat(argc, argv, "cameraDistance", 4.0f);
+    camera->track = ArgBool(argc, argv, "cameraTrack", true);
+    camera->trackBone = ArgInt(argc, argv, "cameraTrackBone", 0);
 }
 
 static inline void OrbitCameraUpdate(
-    Camera3D* cam, 
-    float* cameraAzimuth,
-    float* cameraAltitude,
-    float* cameraDistance,
+    OrbitCamera* camera,
     Vector3 target,
-    float mouse_dx,
-    float mouse_dy,
+    float mouseDx,
+    float mouseDy,
+    float mouseWheel,
     float dt)
 {
-    *cameraAzimuth = OrbitCameraUpdateAzimuth(*cameraAzimuth, mouse_dx, dt);
-    *cameraAltitude = OrbitCameraUpdateAltitude(*cameraAltitude, mouse_dy, dt);
-    *cameraDistance = OrbitCameraUpdateDistance(*cameraDistance, dt);
+    camera->azimuth = camera->azimuth + 1.0f * dt * -mouseDx;
+    camera->altitude = clampf(camera->altitude + 1.0f * dt * mouseDy, 0.0, 0.4f * PIf);
+    camera->distance = clampf(camera->distance +  20.0f * dt * -mouseWheel, 0.1f, 100.0f);
     
-    Quaternion rotationAzimuth = QuaternionFromAxisAngle((Vector3){0, 1, 0}, *cameraAzimuth);
-    Vector3 position = Vector3RotateByQuaternion((Vector3){0, 0, *cameraDistance}, rotationAzimuth);
+    Quaternion rotationAzimuth = QuaternionFromAxisAngle((Vector3){0, 1, 0}, camera->azimuth);
+    Vector3 position = Vector3RotateByQuaternion((Vector3){0, 0, camera->distance}, rotationAzimuth);
     Vector3 axis = Vector3Normalize(Vector3CrossProduct(position, (Vector3){0, 1, 0}));
     
-    Quaternion rotationAltitude = QuaternionFromAxisAngle(axis, *cameraAltitude);
+    Quaternion rotationAltitude = QuaternionFromAxisAngle(axis, camera->altitude);
     
     Vector3 eye = Vector3Add(target, Vector3RotateByQuaternion(position, rotationAltitude));
 
-    cam->target = target;
-    cam->position = eye;
+    camera->cam3d.target = target;
+    camera->cam3d.position = eye;
 }
 
 //--------------------------------------
@@ -440,14 +556,32 @@ static void ParserAdvance(Parser* par, int num)
     for (int i = 0; i < num; i++) { ParserInc(par); }
 }
 
+static char parserCharName[2];
+
+static char* ParserCharName(char c)
+{
+    switch (c)
+    {
+        case '\0': return "end of file";
+        case '\r': return "new line";
+        case '\n': return "new line";
+        case '\t': return "tab";
+        case '\v': return "vertical tab";
+        case '\b': return "backspace";
+        case '\f': return "form feed";
+        default:
+            parserCharName[0] = c;
+            parserCharName[1] = '\0';
+            return parserCharName;
+    }
+}
+
 #define ParserError(par, fmt, ...) \
     snprintf(par->err, PARSER_ERR_MAX, "%s:%i:%i: error: " fmt, par->filename, par->row, par->col, ##__VA_ARGS__)
 
 //--------------------------------------
 // BVH Parser
 //--------------------------------------
-
-// TODO: name of char for error
 
 static void BVHParseWhitespace(Parser* par)
 {
@@ -463,7 +597,7 @@ static bool BVHParseString(Parser* par, const char* string)
     }
     else
     {
-        ParserError(par, "expected '%s' at '%c'", string, ParserPeek(par));
+        ParserError(par, "expected '%s' at '%s'", string, ParserCharName(ParserPeek(par)));
         return false;
     }
 }
@@ -480,7 +614,7 @@ static bool BVHParseNewline(Parser* par)
     }
     else
     {
-        ParserError(par, "expected newline at '%c'", ParserPeek(par));
+        ParserError(par, "expected newline at '%s'", ParserCharName(ParserPeek(par)));
         return false;
     }    
 }
@@ -508,7 +642,7 @@ static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
     }
     else
     {
-        ParserError(par, "expected joint name at '%c'", ParserPeek(par));
+        ParserError(par, "expected joint name at '%s'", ParserCharName(ParserPeek(par)));
         return false;
     }   
 }
@@ -528,7 +662,7 @@ static bool BVHParseFloat(float* out, Parser* par)
     }
     else
     {
-        ParserError(par, "expected float at '%c'", ParserPeek(par));
+        ParserError(par, "expected float at '%s'", ParserCharName(ParserPeek(par)));
         return false;
     }
 }
@@ -548,7 +682,7 @@ static bool BVHParseInt(int* out, Parser* par)
     }
     else
     {
-        ParserError(par, "expected integer at '%c'", ParserPeek(par));
+        ParserError(par, "expected integer at '%s'", ParserCharName(ParserPeek(par)));
         return false;
     }
 }
@@ -909,7 +1043,6 @@ static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int fram
 static void TransformDataSampleFrameNearest(TransformData* data, BVHData* bvh, float time, float scale)
 {
     int frame = clamp((int)(time / bvh->frameTime + 0.5f), 0, bvh->frameCount - 1);
-    
     TransformDataSampleFrame(data, bvh, frame, scale);
 }
 
@@ -989,22 +1122,176 @@ static void TransformDataForwardKinematics(TransformData* data)
 }
 
 //--------------------------------------
+// Character Data
+//--------------------------------------
+
+enum
+{
+    MAX_CHARACTERS = 6,
+};
+
+typedef struct {
+  
+    int count;
+    int active;
+
+    BVHData bvhData[MAX_CHARACTERS];
+    float scales[MAX_CHARACTERS];
+    char names[MAX_CHARACTERS][128];
+    float autoScales[MAX_CHARACTERS];
+    Color colors[MAX_CHARACTERS];
+    float opacities[MAX_CHARACTERS];
+    float radii[MAX_CHARACTERS];
+    char filePaths[MAX_CHARACTERS][512];
+    
+    TransformData xformData[MAX_CHARACTERS];
+    TransformData xformTmp0[MAX_CHARACTERS];
+    TransformData xformTmp1[MAX_CHARACTERS];
+    TransformData xformTmp2[MAX_CHARACTERS];
+    TransformData xformTmp3[MAX_CHARACTERS];
+  
+    bool colorPickerActive;
+
+} CharacterData;
+
+static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
+{
+    data->count = 0;
+    data->active = 0;
+
+    data->colors[0] = ArgColor(argc, argv, "-color0", ORANGE);
+    data->colors[1] = ArgColor(argc, argv, "-color1", VIOLET);
+    data->colors[2] = ArgColor(argc, argv, "-color2", PINK);
+    data->colors[3] = ArgColor(argc, argv, "-color3", PURPLE);
+    data->colors[4] = ArgColor(argc, argv, "-color4", MAGENTA);
+    data->colors[5] = ArgColor(argc, argv, "-color5", GREEN);
+    
+    for (int i = 0; i < MAX_CHARACTERS; i++)
+    {
+        BVHDataInit(&data->bvhData[i]);
+        data->scales[i] = 1.0f;
+        data->names[i][0] = '\0';
+        data->autoScales[i] = 1.0f;
+        data->opacities[i] = ArgFloat(argc, argv, "capsuleOpacity", 1.0f);
+        data->radii[i] = ArgFloat(argc, argv, "maxCapsuleRadius", 0.04f);
+        data->filePaths[i][0] = '\0';
+        TransformDataInit(&data->xformData[i]);
+        TransformDataInit(&data->xformTmp0[i]);
+        TransformDataInit(&data->xformTmp1[i]);
+        TransformDataInit(&data->xformTmp2[i]);
+        TransformDataInit(&data->xformTmp3[i]);    
+    }
+    
+    data->colorPickerActive = ArgBool(argc, argv, "colorPickerActive", false);
+}
+
+static inline void CharacterDataFree(CharacterData* data)
+{
+    for (int i = 0; i < data->count; i++)
+    {
+        TransformDataFree(&data->xformData[i]);
+        TransformDataFree(&data->xformTmp0[i]);
+        TransformDataFree(&data->xformTmp1[i]);
+        TransformDataFree(&data->xformTmp2[i]);
+        TransformDataFree(&data->xformTmp3[i]);
+        BVHDataFree(&data->bvhData[i]);
+    }  
+}
+
+static inline void UpdateWindowTitle(const char* path)
+{
+    if (path == NULL)
+    {
+        SetWindowTitle("BVHView");
+    }
+    else
+    {
+        char windowTitle[512];
+        snprintf(windowTitle, 512, "%s - BVHView", path);
+        SetWindowTitle(windowTitle);
+    }
+}
+
+static bool CharacterDataLoadFromFile(
+    CharacterData* data,
+    const char* path, 
+    char* errMsg,
+    int errMsgSize)
+{
+    printf("INFO: Loading '%s'\n", path);
+
+    if (data->count == MAX_CHARACTERS)
+    {
+        snprintf(errMsg, 512, "Error: Maximum number of BVH files loaded (%i)", MAX_CHARACTERS);
+        return false;
+    }
+
+    if (BVHDataLoad(&data->bvhData[data->count], path, errMsg, errMsgSize))
+    {
+        TransformDataResize(&data->xformData[data->count], &data->bvhData[data->count]);
+        TransformDataResize(&data->xformTmp0[data->count], &data->bvhData[data->count]);
+        TransformDataResize(&data->xformTmp1[data->count], &data->bvhData[data->count]);
+        TransformDataResize(&data->xformTmp2[data->count], &data->bvhData[data->count]);
+        TransformDataResize(&data->xformTmp3[data->count], &data->bvhData[data->count]);
+      
+        snprintf(data->filePaths[data->count], 512, "%s", path);
+
+        const char* filename = path;
+        while (strchr(filename, '/')) { filename = strchr(filename, '/') + 1; }
+        while (strchr(filename, '\\')) { filename = strchr(filename, '\\') + 1; }
+        
+        snprintf(data->names[data->count], 128, "%s", filename);
+        data->scales[data->count] = 1.0f;
+        
+        // Auto-Scaling and unit detection
+        
+        if (data->bvhData[data->count].frameCount > 0)
+        {
+            TransformDataSampleFrame(&data->xformData[data->count], &data->bvhData[data->count], 0, 1.0f);
+            TransformDataForwardKinematics(&data->xformData[data->count]);
+            
+            float height = 1e-8f;
+            for (int j = 0; j < data->xformData[data->count].jointCount; j++)
+            {
+                height = maxf(height, data->xformData[data->count].globalPositions[j].y);
+            } 
+            
+            data->scales[data->count] = height > 10.0f ? 0.01f : 1.0f;
+            data->autoScales[data->count] = 1.8 / height;
+        }
+        else
+        {
+            data->autoScales[data->count] = 1.0f;
+        }
+        
+        data->count++;
+        
+        return true;
+    }
+    else
+    {
+        printf("INFO: Failed to Load '%s'\n", path);
+        return false;
+    }
+}
+
+//--------------------------------------
 // Capsule Functions
 //--------------------------------------
 
-static Vector3 CapsuleStart(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
+static inline Vector3 CapsuleStart(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     return Vector3Add(capsulePosition, 
         Vector3RotateByQuaternion((Vector3){+capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
 }
 
-static Vector3 CapsuleEnd(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
+static inline Vector3 CapsuleEnd(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     return Vector3Add(capsulePosition, 
         Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)); 
 }
 
-static Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
+static inline Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
   
@@ -1012,7 +1299,7 @@ static Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation
         Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)), capsuleStart);   
 }
 
-static Vector3 NearestPointOnLineSegment(
+static inline Vector3 NearestPointOnLineSegment(
     Vector3 lineStart, 
     Vector3 lineEnd,
     Vector3 point)
@@ -1032,7 +1319,7 @@ static Vector3 NearestPointOnLineSegment(
     }
 }
 
-static void NearestPointBetweenLineSegments(
+static inline void NearestPointBetweenLineSegments(
     Vector3* nearestLine0, 
     Vector3* nearestLine1, 
     Vector3 line0Start, 
@@ -1058,7 +1345,7 @@ static void NearestPointBetweenLineSegments(
     *nearestLine0 = NearestPointOnLineSegment(line0Start, line0End, *nearestLine1);
 }
 
-static void NearestPointBetweenLineSegmentAndGroundPlane(
+static inline void NearestPointBetweenLineSegmentAndGroundPlane(
     Vector3* nearestPointOnLine,
     Vector3* nearestPointOnGroundPlane,
     Vector3 lineStart, 
@@ -1079,7 +1366,7 @@ static void NearestPointBetweenLineSegmentAndGroundPlane(
     *nearestPointOnGroundPlane = (Vector3){ nearestPointOnLine->x, 0.0f, nearestPointOnLine->z };
 }
 
-static void NearestPointBetweenLineSegmentAndGroundSegment(
+static inline void NearestPointBetweenLineSegmentAndGroundSegment(
     Vector3* nearestPointOnLine,
     Vector3* nearestPointOnGround,
     Vector3 lineStart, 
@@ -1173,7 +1460,7 @@ static void NearestPointBetweenLineSegmentAndGroundSegment(
     }
 }
 
-static float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float rad)
+static inline float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float rad)
 {
     Vector3 di = Vector3Subtract(sph, pos);
     float l = maxf(Vector3Length(di), rad);
@@ -1196,7 +1483,7 @@ static float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float rad)
     return 1.0f - clampf(res, 0.0f, 1.0f);
 }
 
-static float CapsuleSphereIntersectionArea(
+static inline float CapsuleSphereIntersectionArea(
     float cosCap1, float cosCap2,
     float cap2, float cosCist)
 {
@@ -1220,7 +1507,7 @@ static float CapsuleSphereIntersectionArea(
     return area * (1.0f - maxf(cosCap1, cosCap2));
 }
 
-static float SphereDirectionalOcclusion(
+static inline float SphereDirectionalOcclusion(
     Vector3 pos, Vector3 sphere, float radius,
     Vector3 coneDir, float coneAngle)
 {
@@ -1236,7 +1523,7 @@ static float SphereDirectionalOcclusion(
         cosTheta, cosCone, coneAngle / 2.0f, cosPhi) / (1.0f - cosCone);
 }
 
-static float CapsuleDirectionalOcclusion(
+static inline float CapsuleDirectionalOcclusion(
     Vector3 pos, Vector3 capStart, Vector3 capVec,
     float capRadius, Vector3 coneDir, float coneAngle)
 {
@@ -1252,7 +1539,7 @@ static float CapsuleDirectionalOcclusion(
         pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
 }
 
-float CapsuleRayIntersect(
+static inline float CapsuleRayIntersect(
     Vector3 capStart, Vector3 capVec, float capRadius,
     Vector3 rayStart, Vector3 rayDir)
 {
@@ -1329,6 +1616,7 @@ typedef struct
     float* capsuleRadii;
     float* capsuleHalfLengths;
     Vector3* capsuleColors;
+    float* capsuleOpacities;
     CapsuleSort* capsuleSort;
     
     int aoCapsuleCount;
@@ -1353,6 +1641,7 @@ static void CapsuleDataInit(CapsuleData* data)
     data->capsuleRadii = NULL;
     data->capsuleHalfLengths = NULL;
     data->capsuleColors = NULL;
+    data->capsuleOpacities = NULL;
     data->capsuleSort = NULL;
     
     data->aoCapsuleCount = 0;
@@ -1376,6 +1665,7 @@ static void CapsuleDataResize(CapsuleData* data, int maxCapsuleCount)
     data->capsuleRadii = realloc(data->capsuleRadii, maxCapsuleCount * sizeof(float));
     data->capsuleHalfLengths = realloc(data->capsuleHalfLengths, maxCapsuleCount * sizeof(float));
     data->capsuleColors = realloc(data->capsuleColors, maxCapsuleCount * sizeof(Vector3));
+    data->capsuleOpacities = realloc(data->capsuleOpacities, maxCapsuleCount * sizeof(float));
     data->capsuleSort = realloc(data->capsuleSort, maxCapsuleCount * sizeof(CapsuleSort));
 
     data->aoCapsuleCount = 0;
@@ -1398,6 +1688,7 @@ static void CapsuleDataFree(CapsuleData* data)
     free(data->capsuleRadii);
     free(data->capsuleHalfLengths);
     free(data->capsuleColors);
+    free(data->capsuleOpacities);
     free(data->capsuleSort);
     
     free(data->aoCapsuleStarts);
@@ -1418,7 +1709,7 @@ static void CapsuleDataReset(CapsuleData* data)
     data->shadowCapsuleCount = 0;
 }
 
-static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData* xforms, float maxCapsuleRadius, Color color, bool ignoreEndSite)
+static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData* xforms, float maxCapsuleRadius, Color color, float opacity, bool ignoreEndSite)
 {
     for (int i = 0; i < xforms->jointCount; i++)
     {
@@ -1441,6 +1732,7 @@ static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData*
         data->capsuleHalfLengths[data->capsuleCount] = capsuleHalfLength;
         data->capsuleRadii[data->capsuleCount] = capsuleRadius;
         data->capsuleColors[data->capsuleCount] = (Vector3){ color.r / 255.0f, color.g / 255.0f, color.b / 255.0f }; 
+        data->capsuleOpacities[data->capsuleCount] = opacity; 
         data->capsuleCount++;
     }
 }
@@ -1635,6 +1927,17 @@ static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int cap
         data->shadowCapsuleVectors[i] = CapsuleVector(data->capsulePositions[j], data->capsuleRotations[j], data->capsuleHalfLengths[j]);
         data->shadowCapsuleRadii[i] = data->capsuleRadii[j];
     }
+}
+
+static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, CharacterData* characterData)
+{
+    int totalJointCount = 0;
+    for (int i = 0; i < characterData->count; i++)
+    {
+        totalJointCount += characterData->bvhData[i].jointCount;
+    }
+    
+    CapsuleDataResize(capsuleData, totalJointCount);
 }
 
 //--------------------------------------
@@ -2204,8 +2507,6 @@ static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
 // Models
 //--------------------------------------
 
-#define OBJDATA(X) #X
-
 static const char* capsuleOBJ =
 "v 0.82165808 -0.82165808 -1.0579772e-18     \n"
 "v 0.82165808 -0.58100000 0.58100000         \n"
@@ -2455,108 +2756,7 @@ static Model LoadOBJFromMemory(const char *fileText)
 }
 
 //--------------------------------------
-// Command Line Args
-//--------------------------------------
-
-static inline char* ArgFind(int argc, char** argv, const char* name)
-{
-    for (int i = 1; i < argc; i++)
-    {
-        if (strlen(argv[i]) > 4 &&
-          argv[i][0] == '-' &&
-          argv[i][1] == '-' &&
-          strstr(argv[i] + 2, name) == argv[i] + 2)
-        { 
-            char* argStart = strchr(argv[i], '=');
-            return argStart ? argStart + 1 : NULL;
-        }
-    }
-    
-    return NULL;
-}
-
-static inline float ArgFloat(int argc, char** argv, const char* name, float defaultValue)
-{ 
-    char* value = ArgFind(argc, argv, name);
-    if (!value) { return defaultValue; }
-    
-    errno = 0;
-    float output = strtof(value, NULL);
-    if (errno == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return output; }
-    
-    printf("ERROR: Could not parse value '%s' given for option '%s' as float\n", value, name);
-    return defaultValue;
-}
-
-static inline int ArgInt(int argc, char** argv, const char* name, int defaultValue)
-{ 
-    char* value = ArgFind(argc, argv, name);
-    if (!value) { return defaultValue; }
-
-    errno = 0;
-    int output = (int)strtol(value, NULL, 10);
-    if (errno == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return output; }
-    
-    printf("ERROR: Could not parse value '%s' given for option '%s' as int\n", value, name);
-    return defaultValue;
-}
-
-static inline int ArgBool(int argc, char** argv, const char* name, bool defaultValue)
-{ 
-    char* value = ArgFind(argc, argv, name);
-    if (!value) { return defaultValue; }
-    if (strcmp(value, "true") == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return true; }
-    if (strcmp(value, "false") == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return false; }
-    
-    printf("ERROR: Could not parse value '%s' given for option '%s' as bool\n", value, name);
-    return defaultValue;
-}
-
-static inline int ArgEnum(int argc, char** argv, const char* name, int optionCount, const char* options[], int defaultValue)
-{ 
-    char* value = ArgFind(argc, argv, name);
-    if (!value) { return defaultValue; }
-
-    for (int i = 0; i < optionCount; i++)
-    {
-        if (strcmp(value, options[i]) == 0)
-        {
-            printf("INFO: Parsed option '%s' as '%s'\n", name, value);
-            return i;
-        }
-    }
-    
-    printf("ERROR: Could not parse value '%s' given for option '%s' as enum\n", value, name);
-    return defaultValue;
-}
-
-static inline const char* ArgStr(int argc, char** argv, const char* name, const char* defaultValue)
-{ 
-    char* value = ArgFind(argc, argv, name);
-    if (!value) { return defaultValue; }
-
-    printf("INFO: Parsed option '%s' as '%s'\n", name, value);
-    return value;
-}
-
-static inline Color ArgColor(int argc, char** argv, const char* name, Color defaultValue)
-{ 
-    char* value = ArgFind(argc, argv, name);
-    if (!value) { return defaultValue; }
-
-    int cx, cy, cz;
-    if (sscanf(value, "%i,%i,%i", &cx, &cy, &cz) == 3)
-    {
-        printf("INFO: Parsed option '%s' as '%s'\n", name, value);
-        return (Color){ clamp(cx, 0, 255), clamp(cy, 0, 255), clamp(cz, 0, 255) };
-    }
-
-    printf("ERROR: Could not parse value '%s' given for option '%s' as color\n", value, name);
-    return defaultValue;
-}
-
-//--------------------------------------
-// Rendering
+// Render Settings
 //--------------------------------------
 
 typedef struct {
@@ -2590,9 +2790,6 @@ typedef struct {
     bool drawUI;
     
     int shadowMode;
-    
-    float maxCapsuleRadius;
-    float capsuleOpacity;
   
 } RenderSettings;
 
@@ -2602,7 +2799,7 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
     
     settings->sunLightConeAngle = ArgFloat(argc, argv, "sunLightConeAngle", 0.2f);
     settings->sunLightStrength = ArgFloat(argc, argv, "sunLightStrength", 0.25f);
-    settings->sunAzimuth = ArgFloat(argc, argv, "sunAzimuth", 0.0f);
+    settings->sunAzimuth = ArgFloat(argc, argv, "sunAzimuth", PIf / 4.0f);
     settings->sunAltitude = ArgFloat(argc, argv, "sunAltitude", 0.8f);
     settings->sunColor = ArgColor(argc, argv, "sunColor", (Color){ 253, 255, 232 });
     
@@ -2627,10 +2824,11 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
     settings->drawUI = ArgBool(argc, argv, "drawUI", true);
     
     settings->shadowMode = ArgEnum(argc, argv, "shadowMode", 3, (const char*[]){"none", "hard", "soft"}, 2);
-    
-    settings->maxCapsuleRadius = ArgFloat(argc, argv, "maxCapsuleRadius", 0.04f);
-    settings->capsuleOpacity = ArgFloat(argc, argv, "capsuleOpacity", 1.0f);
 }
+
+//--------------------------------------
+// Drawing
+//--------------------------------------
 
 static inline void DrawTransform(const Vector3 position, const Quaternion rotation, const float size)
 {
@@ -2709,210 +2907,852 @@ static inline void DrawWireFrames(CapsuleData* capsuleData, Color color)
 }
 
 //--------------------------------------
+// Scrubber
+//--------------------------------------
+
+typedef struct {
+  
+    bool playing;
+    bool looping;
+    float playTime;
+    float playSpeed;
+    bool frameSnap;
+    int sampleMode;
+    
+    float timeLimit;
+    int frameLimit;
+    int frameMin;
+    int frameMax;
+    int frameMinSelect;
+    int frameMaxSelect;
+    bool frameMinEdit;
+    bool frameMaxEdit;
+    float timeMin;
+    float timeMax;
+  
+} ScrubberSettings;
+
+static inline void ScrubberSettingsInit(ScrubberSettings* settings, int argc, char** argv)
+{
+    settings->playing = ArgBool(argc, argv, "playing", true);
+    settings->looping = ArgBool(argc, argv, "looping", false);
+    settings->playTime = ArgFloat(argc, argv, "playTime", 0.0f);
+    settings->playSpeed = ArgFloat(argc, argv, "playSpeed", 1.0f);
+    settings->frameSnap = ArgBool(argc, argv, "frameSnap", true);
+    settings->sampleMode = ArgEnum(argc, argv, "sampleMode", 3, (const char*[]){ "nearest", "linear", "cubic" }, 1);
+    
+    settings->timeLimit = 0.0f;
+    settings->frameLimit = 0;
+    settings->frameMin = 0;
+    settings->frameMax = 0;
+    settings->frameMinSelect = 0;
+    settings->frameMaxSelect = 0;
+    settings->frameMinEdit = false;
+    settings->frameMaxEdit = false;
+    settings->timeMin = 0.0f;
+    settings->timeMax = 0.0f;
+}
+
+static inline void ScrubberSettingsRecomputeLimits(ScrubberSettings* settings, CharacterData* characterData)
+{
+    settings->frameLimit = 0;
+    settings->timeLimit = 0.0f;
+    for (int i = 0; i < characterData->count; i++)
+    {
+        settings->frameLimit = max(settings->frameLimit, characterData->bvhData[i].frameCount - 1);
+        settings->timeLimit = maxf(settings->timeLimit, (characterData->bvhData[i].frameCount - 1) * characterData->bvhData[i].frameTime);
+    } 
+}
+
+static inline void ScrubberSettingsInitMaxs(ScrubberSettings* settings, CharacterData* characterData)
+{
+    if (characterData->count == 0) { return; }
+    
+    settings->frameMax = characterData->bvhData[characterData->active].frameCount - 1;
+    settings->frameMaxSelect = settings->frameMax;
+    settings->timeMax = (characterData->bvhData[characterData->active].frameCount - 1) * characterData->bvhData[characterData->active].frameTime;
+    
+    settings->frameMin = 0;
+    settings->frameMinSelect = settings->frameMin;
+    settings->timeMin = 0.0f;
+}
+
+static inline void ScrubberSettingsClamp(ScrubberSettings* settings, CharacterData* characterData)
+{
+    if (characterData->count == 0) { return; }
+  
+    settings->frameMax = clamp(settings->frameMax, 0, characterData->bvhData[characterData->active].frameCount - 1);
+    settings->frameMaxSelect = settings->frameMax;
+    settings->timeMax = clampf(settings->timeMax, 0.0f, (characterData->bvhData[characterData->active].frameCount - 1) * characterData->bvhData[characterData->active].frameTime);
+    
+    settings->frameMin = clamp(settings->frameMin, 0, settings->frameMax);
+    settings->frameMinSelect = settings->frameMin;
+    settings->timeMin = clampf(settings->timeMin, 0.0f, settings->timeMax);
+    
+    settings->playTime = clampf(settings->playTime, settings->timeMin, settings->timeMax);
+}
+
+//--------------------------------------
 // GUI
 //--------------------------------------
 
-static inline void GuiRenderSettings(RenderSettings* renderSettings, int screenWidth, int screenHeight)
+static inline void GuiOrbitCamera(OrbitCamera* camera, CharacterData* characterData)
 {
-    GuiGroupBox((Rectangle){ screenWidth - 260, 10, 240, 490 }, "Rendering");
+    GuiGroupBox((Rectangle){ 20, 10, 190, 200 }, "Camera");
+    
+    GuiLabel((Rectangle){ 30, 20, 150, 20 }, "Ctrl + Left Click - Rotate");
+    GuiLabel((Rectangle){ 30, 40, 150, 20 }, "Mouse Scroll - Zoom");
+    GuiLabel((Rectangle){ 30, 60, 150, 20 }, TextFormat("Target: [% 5.3f % 5.3f % 5.3f]", camera->cam3d.target.x, camera->cam3d.target.y, camera->cam3d.target.z));
+    GuiLabel((Rectangle){ 30, 80, 150, 20 }, TextFormat("Azimuth: %5.3f", camera->azimuth));
+    GuiLabel((Rectangle){ 30, 100, 150, 20 }, TextFormat("Altitude: %5.3f", camera->altitude));
+    GuiLabel((Rectangle){ 30, 120, 150, 20 }, TextFormat("Distance: %5.3f", camera->distance));
+    
+    if (characterData->count > 0)
+    {
+        GuiToggle((Rectangle){ 30, 150, 100, 20 }, "Track", &camera->track);
+        GuiComboBox((Rectangle){ 30, 180, 150, 20 }, characterData->bvhData[characterData->active].jointNamesCombo, &camera->trackBone);          
+    }
+}
+
+static inline void GuiRenderSettings(RenderSettings* settings, int screenWidth, int screenHeight)
+{
+    GuiGroupBox((Rectangle){ screenWidth - 260, 10, 240, 430 }, "Rendering");
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 20, 100, 20 }, 
         "Exposure", 
-        TextFormat("%5.2f", renderSettings->exposure),
-        &renderSettings->exposure, 
+        TextFormat("%5.2f", settings->exposure),
+        &settings->exposure, 
         0.0f, 3.0f);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 50, 100, 20 }, 
         "Sun Light", 
-        TextFormat("%5.2f", renderSettings->sunLightStrength),
-        &renderSettings->sunLightStrength, 
+        TextFormat("%5.2f", settings->sunLightStrength),
+        &settings->sunLightStrength, 
         0.0f, 1.0f);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 80, 100, 20 }, 
         "Sun Softness", 
-        TextFormat("%5.2f", renderSettings->sunLightConeAngle),
-        &renderSettings->sunLightConeAngle, 
+        TextFormat("%5.2f", settings->sunLightConeAngle),
+        &settings->sunLightConeAngle, 
         0.02f, PIf / 4.0f);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 110, 100, 20 }, 
         "Sky Light", 
-        TextFormat("%5.2f", renderSettings->skyLightStrength),
-        &renderSettings->skyLightStrength, 
+        TextFormat("%5.2f", settings->skyLightStrength),
+        &settings->skyLightStrength, 
         0.0f, 1.0f);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 140, 100, 20 }, 
         "Ambient Light", 
-        TextFormat("%5.2f", renderSettings->ambientLightStrength),
-        &renderSettings->ambientLightStrength, 
+        TextFormat("%5.2f", settings->ambientLightStrength),
+        &settings->ambientLightStrength, 
         0.0f, 2.0f);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 170, 100, 20 }, 
         "Ground Light", 
-        TextFormat("%5.2f", renderSettings->groundLightStrength),
-        &renderSettings->groundLightStrength, 
+        TextFormat("%5.2f", settings->groundLightStrength),
+        &settings->groundLightStrength, 
         0.0f, 0.5f);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 200, 100, 20 }, 
         "Sun Azimuth", 
-        TextFormat("%5.2f", renderSettings->sunAzimuth),
-        &renderSettings->sunAzimuth, 
+        TextFormat("%5.2f", settings->sunAzimuth),
+        &settings->sunAzimuth, 
         -PIf, PIf);
     
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 230, 100, 20 }, 
         "Sun Altitude", 
-        TextFormat("%5.2f", renderSettings->sunAltitude),
-        &renderSettings->sunAltitude, 
+        TextFormat("%5.2f", settings->sunAltitude),
+        &settings->sunAltitude, 
         0.0f, 0.49f * PIf);
     
-    GuiCheckBox((Rectangle){ screenWidth - 250, 260, 20, 20 }, "Draw Origin", &renderSettings->drawOrigin);
-    GuiCheckBox((Rectangle){ screenWidth - 130, 260, 20, 20 }, "Draw Grid", &renderSettings->drawGrid);
-    GuiCheckBox((Rectangle){ screenWidth - 250, 290, 20, 20 }, "Draw Checker", &renderSettings->drawChecker);
-    GuiCheckBox((Rectangle){ screenWidth - 130, 290, 20, 20 }, "Draw Capsules", &renderSettings->drawCapsules);
-    GuiCheckBox((Rectangle){ screenWidth - 250, 320, 20, 20 }, "Draw Wireframes", &renderSettings->drawWireframes);
-    GuiCheckBox((Rectangle){ screenWidth - 130, 320, 20, 20 }, "Draw Skeleton", &renderSettings->drawSkeleton);
-    GuiCheckBox((Rectangle){ screenWidth - 250, 350, 20, 20 }, "Draw Transforms", &renderSettings->drawTransforms);
-    GuiCheckBox((Rectangle){ screenWidth - 130, 350, 20, 20 }, "Draw AO", &renderSettings->drawAO);
-    GuiCheckBox((Rectangle){ screenWidth - 250, 380, 20, 20 }, "Draw End Sites", &renderSettings->drawEndSites);
-    GuiCheckBox((Rectangle){ screenWidth - 130, 380, 20, 20 }, "Draw FPS", &renderSettings->drawFPS);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 260, 20, 20 }, "Draw Origin", &settings->drawOrigin);
+    GuiCheckBox((Rectangle){ screenWidth - 130, 260, 20, 20 }, "Draw Grid", &settings->drawGrid);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 290, 20, 20 }, "Draw Checker", &settings->drawChecker);
+    GuiCheckBox((Rectangle){ screenWidth - 130, 290, 20, 20 }, "Draw Capsules", &settings->drawCapsules);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 320, 20, 20 }, "Draw Wireframes", &settings->drawWireframes);
+    GuiCheckBox((Rectangle){ screenWidth - 130, 320, 20, 20 }, "Draw Skeleton", &settings->drawSkeleton);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 350, 20, 20 }, "Draw Transforms", &settings->drawTransforms);
+    GuiCheckBox((Rectangle){ screenWidth - 130, 350, 20, 20 }, "Draw AO", &settings->drawAO);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 380, 20, 20 }, "Draw End Sites", &settings->drawEndSites);
+    GuiCheckBox((Rectangle){ screenWidth - 130, 380, 20, 20 }, "Draw FPS", &settings->drawFPS);
     GuiLabel((Rectangle){ screenWidth - 240, 410, 100, 20 }, "Shadows");
-    GuiComboBox((Rectangle){ screenWidth - 180, 410, 150, 20 }, "None;Hard;Soft", &renderSettings->shadowMode);
-
-    GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 440, 100, 20 }, 
-        "Capsule Radius", 
-        TextFormat("%5.2f", renderSettings->maxCapsuleRadius),
-        &renderSettings->maxCapsuleRadius, 
-        0.01f, 0.1f);  
-
-    GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 470, 100, 20 }, 
-        "Capsule Opacity", 
-        TextFormat("%5.2f", renderSettings->capsuleOpacity),
-        &renderSettings->capsuleOpacity, 
-        0.0f, 1.0f);  
+    GuiComboBox((Rectangle){ screenWidth - 180, 410, 150, 20 }, "None;Hard;Soft", &settings->shadowMode);
 }
 
-//--------------------------------------
-// Loading
-//--------------------------------------
-
-enum
-{
-    MAX_BVH_FILES = 6,
-};
-
-static bool LoadBVHFile(
-    const char* path, 
+static inline void GuiCharacterData(
+    CharacterData* characterData, 
+    GuiWindowFileDialogState* fileDialogState, 
+    ScrubberSettings* scrubberSettings,
     char* errMsg,
-    int errMsgSize,
-    BVHData* bvhData, 
-    TransformData* xformData,
-    TransformData* xformTmp0,
-    TransformData* xformTmp1,
-    TransformData* xformTmp2,
-    TransformData* xformTmp3,
-    char* bvhName, 
-    int bvhNameSize, 
-    float* bvhScale,
-    float* bvhAutoScale)
+    int argc, 
+    char** argv)
 {
-    printf("INFO: Loading '%s'\n", path);
-
-    if (BVHDataLoad(bvhData, path, errMsg, errMsgSize))
+    GuiGroupBox((Rectangle){ 20, 230, 190, 340 }, "Characters");
+    
+    if (GuiButton((Rectangle){ 30, 240, 110, 20 }, "Open"))
     {
-        TransformDataResize(xformData, bvhData);
-        TransformDataResize(xformTmp0, bvhData);
-        TransformDataResize(xformTmp1, bvhData);
-        TransformDataResize(xformTmp2, bvhData);
-        TransformDataResize(xformTmp3, bvhData);
-      
-        const char* filename = path;
-        while (strchr(filename, '/')) { filename = strchr(filename, '/') + 1; }
-        while (strchr(filename, '\\')) { filename = strchr(filename, '\\') + 1; }
-      
-        snprintf(bvhName, bvhNameSize, "%s", filename);
-        *bvhScale = 1.0f;
-        
-        // Set Window Title
-        
-        char windowTitle[512];
-        snprintf(windowTitle, 512, "%s - BVHView", path);
-        SetWindowTitle(windowTitle);
-        
-        // Auto-Scaling and unit detection
-        
-        if (bvhData->frameCount > 0)
+        fileDialogState->windowActive = true;
+    }
+    
+    if (GuiButton((Rectangle){ 150, 240, 50, 20 }, "Clear"))
+    {
+        characterData->count = 0;
+        errMsg[0] = '\0';
+        ScrubberSettingsInit(scrubberSettings, argc, argv);
+        UpdateWindowTitle(NULL);
+   }
+    
+    for (int i = 0; i < characterData->count; i++)
+    {
+        char bvhNameShort[20];
+        bvhNameShort[0] = '\0';
+        if (strlen(characterData->names[i]) + 1 <= 20)
         {
-            TransformDataSampleFrame(xformData, bvhData, 0, 1.0f);
-            TransformDataForwardKinematics(xformData);
-            
-            float height = 1e-8f;
-            for (int j = 0; j < xformData->jointCount; j++)
-            {
-                height = maxf(height, xformData->globalPositions[j].y);
-            } 
-            
-            *bvhScale = height > 10.0f ? 0.01f : 1.0f;
-            *bvhAutoScale = 1.8 / height;
+            strcat(bvhNameShort, characterData->names[i]);
         }
         else
         {
-            *bvhAutoScale = 1.0f;
+            memcpy(bvhNameShort, characterData->names[i], 16);
+            memcpy(bvhNameShort + 16, "...", 4);
         }
         
-        return true;
-    }
-    else
-    {
-        printf("INFO: Failed to Load '%s'\n", path);
-
-        return false;
-    }
-}
-
-static inline void UpdateCapsuleBuffersForBVHs(BVHData bvhData[], int bvhCount, CapsuleData* capsuleData)
-{
-    int totalJointCount = 0;
-    for (int i = 0; i < bvhCount; i++)
-    {
-        totalJointCount += bvhData[i].jointCount;
-    }
-    
-    CapsuleDataResize(capsuleData, totalJointCount);
-}
-
-static inline void UpdateScrubberForBVHs(
-    int* frameLimit, 
-    float* timeLimit, 
-    int* frameMax,
-    int* frameMaxSelect,
-    float* timeMax,
-    BVHData bvhData[], 
-    int bvhCount,
-    int bvhActive)
-{
-    for (int i = 0; i < bvhCount; i++)
-    {
-        int bvhFrameLimit = bvhData[i].frameCount - 1;
-        float bvhTimeLimit = bvhFrameLimit * bvhData[i].frameTime;
-        *frameLimit = max(*frameLimit, bvhFrameLimit);
-        *timeLimit = maxf(*timeLimit, bvhTimeLimit);
+        bool bvhSelected = i == characterData->active;
+        GuiToggle((Rectangle){ 30, 270 + i * 30, 140, 20 }, bvhNameShort, &bvhSelected);
+        
+        if (bvhSelected)
+        {
+            characterData->active = i;
+            ScrubberSettingsClamp(scrubberSettings, characterData);
+            UpdateWindowTitle(characterData->filePaths[characterData->active]);
+        }
+        
+        DrawRectangleRec((Rectangle){ 180, 270 + i * 30, 20, 20 }, characterData->colors[i]);
+        DrawRectangleLinesEx((Rectangle){ 180, 270 + i * 30, 20, 20 }, 1, GRAY);
+        
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            Vector2 mousePosition = GetMousePosition();
+            if (mousePosition.x > 180 && mousePosition.x < 200 &&
+                mousePosition.y > 270 + i * 30 && mousePosition.y < 270 + i * 30 + 20)
+            {
+                characterData->colorPickerActive = !characterData->colorPickerActive;
+            }
+        }
     }
     
-    if (bvhCount > 0)
+    bool scaleM = characterData->scales[characterData->active] == 1.0f;
+    GuiToggle((Rectangle){ 30, 300 + MAX_CHARACTERS * 30, 30, 20 }, "m", &scaleM);
+    if (scaleM) { characterData->scales[characterData->active] = 1.0f; }
+    
+    bool scaleCM = characterData->scales[characterData->active] == 0.01f;
+    GuiToggle((Rectangle){ 65, 300 + MAX_CHARACTERS * 30, 30, 20 }, "cm", &scaleCM);
+    if (scaleCM) { characterData->scales[characterData->active] = 0.01f; }
+    
+    bool scaleInches = characterData->scales[characterData->active] == 0.0254f;
+    GuiToggle((Rectangle){ 100, 300 + MAX_CHARACTERS * 30, 30, 20 }, "inch", &scaleInches);
+    if (scaleInches) { characterData->scales[characterData->active] = 0.0254f; }
+    
+    bool scaleFeet = characterData->scales[characterData->active] == 0.3048f;
+    GuiToggle((Rectangle){ 135, 300 + MAX_CHARACTERS * 30, 30, 20 }, "feet", &scaleFeet);
+    if (scaleFeet) { characterData->scales[characterData->active] = 0.3048f; }
+    
+    bool scaleAuto = characterData->scales[characterData->active] == characterData->autoScales[characterData->active];
+    GuiToggle((Rectangle){ 170, 300 + MAX_CHARACTERS * 30, 30, 20 }, "auto", &scaleAuto);
+    if (scaleAuto) { characterData->scales[characterData->active] = characterData->autoScales[characterData->active]; }
+    
+    GuiSliderBar(
+        (Rectangle){ 70, 330 + MAX_CHARACTERS * 30, 100, 20 }, 
+        "Radius", 
+        TextFormat("%5.2f", characterData->radii[characterData->active]),
+        &characterData->radii[characterData->active], 
+        0.01f, 0.1f);  
+
+    GuiSliderBar(
+        (Rectangle){ 70, 360 + MAX_CHARACTERS * 30, 100, 20 }, 
+        "Opacity", 
+        TextFormat("%5.2f", characterData->opacities[characterData->active]),
+        &characterData->opacities[characterData->active], 
+        0.0f, 1.0f);  
+}
+
+static inline void GuiScrubberSettings(
+    ScrubberSettings* settings,
+    CharacterData* characterData,
+    int screenWidth,
+    int screenHeight)
+{
+    // TODO: Make really center
+    
+    if (characterData->count == 0) { return; }
+
+    float frameTime = characterData->bvhData[characterData->active].frameTime;
+
+    GuiGroupBox((Rectangle){ 40, screenHeight - 100, screenWidth - 80, 90 }, "Scrubber");
+
+    GuiLabel((Rectangle){ 160, screenHeight - 80, 150, 20 }, TextFormat("Frame Time: %f", frameTime));
+    GuiCheckBox((Rectangle){ 290, screenHeight - 80, 20, 20 }, "Snap to Frame", &settings->frameSnap);
+    GuiComboBox((Rectangle){ 400, screenHeight - 80, 100, 20 }, "Nearest;Linear;Cubic", &settings->sampleMode);
+
+    GuiToggle((Rectangle){ screenWidth / 2 - 25, screenHeight - 80, 50, 20 }, "Play", &settings->playing);
+    GuiToggle((Rectangle){ screenWidth / 2 - 85, screenHeight - 80, 50, 20 }, "Loop", &settings->looping);
+    
+    bool speed01x = settings->playSpeed == 0.1f;
+    GuiToggle((Rectangle){ screenWidth / 2 + 40, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { settings->playSpeed = 0.1f; }    
+    bool speed05x = settings->playSpeed == 0.5f;
+    GuiToggle((Rectangle){ screenWidth / 2 + 80, screenHeight - 80, 30, 20 }, "0.5x", &speed05x); if (speed05x) { settings->playSpeed = 0.5f; }
+    bool speed1x = settings->playSpeed == 1.0f;
+    GuiToggle((Rectangle){ screenWidth / 2 + 120, screenHeight - 80, 30, 20 }, "1x", &speed1x); if (speed1x) { settings->playSpeed = 1.0f; }
+    bool speed2x = settings->playSpeed == 2.0f;
+    GuiToggle((Rectangle){ screenWidth / 2 + 160, screenHeight - 80, 30, 20 }, "2x", &speed2x); if (speed2x) { settings->playSpeed = 2.0f; }
+    bool speed4x = settings->playSpeed == 4.0f;
+    GuiToggle((Rectangle){ screenWidth / 2 + 200, screenHeight - 80, 30, 20 }, "4x", &speed4x); if (speed4x) { settings->playSpeed = 4.0f; }
+    GuiSliderBar((Rectangle){ screenWidth / 2 + 240, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", settings->playSpeed), &settings->playSpeed, 0.0f, 4.0f);
+  
+    int frame = clamp((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
+
+    if (GuiValueBox(
+        (Rectangle){ 100, screenHeight - 80, 50, 20 }, 
+        "Min   ", &settings->frameMinSelect, 0, settings->frameLimit, settings->frameMinEdit))
     {
-        *frameMax = bvhData[bvhActive].frameCount - 1;
-        *frameMaxSelect = bvhData[bvhActive].frameCount - 1;
-        *timeMax = (bvhData[bvhActive].frameCount - 1) * bvhData[bvhActive].frameTime;
+        settings->frameMinEdit = !settings->frameMinEdit;
+        if (!settings->frameMinEdit)
+        {
+            settings->frameMin = settings->frameMinSelect;
+            ScrubberSettingsClamp(settings, characterData);
+        }
     }
+    
+    if (GuiValueBox(
+        (Rectangle){ screenWidth - 170, screenHeight - 80, 50, 20 }, 
+        "Max   ", &settings->frameMaxSelect, 0, settings->frameLimit, settings->frameMaxEdit))
+    {
+        settings->frameMaxEdit = !settings->frameMaxEdit;
+        
+        if (!settings->frameMaxEdit)
+        {
+            settings->frameMax = settings->frameMaxSelect;
+            ScrubberSettingsClamp(settings, characterData);
+        }
+    }
+    
+    GuiLabel(
+        (Rectangle){ screenWidth - 110, screenHeight - 80, 100, 20 }, 
+        TextFormat("of %i", settings->frameLimit));
+    
+    float frameFloatPrev = settings->frameSnap ? (float)frame : settings->playTime / frameTime;
+    float frameFloat = frameFloatPrev;
+    
+    GuiSliderBar(
+        (Rectangle){ 100, screenHeight - 50, screenWidth - 220, 20 }, 
+        TextFormat("%5.2f", settings->playTime), 
+        TextFormat("%i", frame),
+        &frameFloat, 
+        (float)settings->frameMin, (float)settings->frameMax);
+    
+    if (frameFloat != frameFloatPrev)
+    {
+        if (settings->frameSnap)
+        {
+            frame = clamp((int)(frameFloat + 0.5f), settings->frameMin, settings->frameMax);
+            settings->playTime = clampf(frame * frameTime, settings->timeMin, settings->timeMax);
+        }
+        else
+        {
+            settings->playTime = clampf(frameFloat * frameTime, settings->timeMin, settings->timeMax);
+        }
+    }  
+}
+
+//--------------------------------------
+// Application
+//--------------------------------------
+
+typedef struct {
+    
+    int argc;
+    char** argv;
+    
+    int screenWidth;
+    int screenHeight;
+    
+    OrbitCamera camera;
+    
+    Shader shader;
+    ShaderUniforms uniforms;
+    
+    Mesh groundPlaneMesh;
+    Model groundPlaneModel;
+    Model capsuleModel;
+    
+    CharacterData characterData;
+    CapsuleData capsuleData;
+  
+    ScrubberSettings scrubberSettings;
+    RenderSettings renderSettings;
+    
+    GuiWindowFileDialogState fileDialogState;
+
+    char errMsg[512];
+  
+} ApplicationState;
+
+
+static void ApplicationUpdate(void* voidApplicationState)
+{
+    ApplicationState* app = voidApplicationState;
+
+    // Process File Dialog
+
+    if (app->fileDialogState.SelectFilePressed)
+    {
+        if (IsFileExtension(app->fileDialogState.fileNameText, ".bvh"))
+        {
+            char fileNameToLoad[512];
+            snprintf(fileNameToLoad, 512, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
+            
+            int prevBvhCount = app->characterData.count;
+            
+            if (CharacterDataLoadFromFile(&app->characterData, fileNameToLoad, app->errMsg, 512))
+            {
+                app->characterData.active = app->characterData.count - 1;
+                
+                CapsuleDataUpdateForCharacters(&app->capsuleData, &app->characterData);
+                ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
+                if (prevBvhCount == 0)
+                {
+                    ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
+                }
+                else
+                {
+                    ScrubberSettingsClamp(&app->scrubberSettings, &app->characterData);
+                }
+                UpdateWindowTitle(app->characterData.filePaths[app->characterData.active]);
+            }
+        }
+        else
+        {
+            snprintf(app->errMsg, 512, "Error: File '%s' is not a BVH file.", app->fileDialogState.fileNameText);
+        }
+        
+        app->fileDialogState.SelectFilePressed = false;
+    }
+
+    // Process Dragged and Dropped Files
+
+    if (IsFileDropped())
+    {
+        FilePathList droppedFiles = LoadDroppedFiles();
+        
+        int prevBvhCount = app->characterData.count;
+        
+        for (int i = 0; i < droppedFiles.count; i++)
+        {
+            if (CharacterDataLoadFromFile(&app->characterData, droppedFiles.paths[i], app->errMsg, 512))
+            {
+                app->characterData.active = app->characterData.count - 1;
+            }
+        }
+
+        UnloadDroppedFiles(droppedFiles);
+        
+        if (app->characterData.count > prevBvhCount)
+        {
+            CapsuleDataUpdateForCharacters(&app->capsuleData, &app->characterData);
+            ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
+            
+            if (prevBvhCount == 0)
+            {
+                ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
+            }
+            else
+            {
+                ScrubberSettingsClamp(&app->scrubberSettings, &app->characterData);
+            }
+            
+            UpdateWindowTitle(app->characterData.filePaths[app->characterData.active]);
+        }
+    }
+
+    // Process Key Presses
+
+    if (IsKeyPressed(KEY_H) && !app->fileDialogState.windowActive)
+    {
+        app->renderSettings.drawUI = !app->renderSettings.drawUI;
+    }
+
+    // Tick time forward
+
+    if (app->scrubberSettings.playing)
+    {
+        app->scrubberSettings.playTime += app->scrubberSettings.playSpeed * GetFrameTime();
+        
+        if (app->scrubberSettings.playTime >= app->scrubberSettings.timeMax)
+        {
+            app->scrubberSettings.playTime = app->scrubberSettings.looping ? 
+                fmod(app->scrubberSettings.playTime, app->scrubberSettings.timeMax) + app->scrubberSettings.timeMin : 
+                app->scrubberSettings.timeMax;
+        }
+    }
+
+    // Sample Animation Data
+
+    for (int i = 0; i < app->characterData.count; i++)
+    {
+        if (app->scrubberSettings.sampleMode == 0)
+        {
+            TransformDataSampleFrameNearest(
+                &app->characterData.xformData[i],
+                &app->characterData.bvhData[i],
+                app->scrubberSettings.playTime,
+                app->characterData.scales[i]);
+        }
+        else if (app->scrubberSettings.sampleMode == 1)
+        {
+            TransformDataSampleFrameLinear(
+                &app->characterData.xformData[i],
+                &app->characterData.xformTmp0[i],
+                &app->characterData.xformTmp1[i],
+                &app->characterData.bvhData[i],
+                app->scrubberSettings.playTime,
+                app->characterData.scales[i]);
+        }
+        else
+        {
+            TransformDataSampleFrameCubic(
+                &app->characterData.xformData[i],
+                &app->characterData.xformTmp0[i],
+                &app->characterData.xformTmp1[i],
+                &app->characterData.xformTmp2[i],
+                &app->characterData.xformTmp3[i],
+                &app->characterData.bvhData[i],
+                app->scrubberSettings.playTime,
+                app->characterData.scales[i]);
+        }
+        
+        TransformDataForwardKinematics(&app->characterData.xformData[i]);
+    }
+
+    // Update Camera
+
+    Vector3 cameraTarget = (Vector3){ 0.0f, 1.0f, 0.0f };
+
+    if (app->characterData.count > 0 && 
+        app->camera.track && 
+        app->camera.trackBone < app->characterData.xformData[app->characterData.active].jointCount)
+    {
+        cameraTarget = app->characterData.xformData[app->characterData.active].globalPositions[app->camera.trackBone];
+    }
+
+    if (!app->fileDialogState.windowActive)
+    {
+        OrbitCameraUpdate(
+            &app->camera,
+            cameraTarget,
+            (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(0)) ? GetMouseDelta().x : 0.0f,
+            (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(0)) ? GetMouseDelta().y : 0.0f,
+            GetMouseWheelMove(),
+            GetFrameTime());
+    }
+
+    // Create Capsules
+
+    CapsuleDataReset(&app->capsuleData);
+    for (int i = 0; i < app->characterData.count; i++)
+    {
+        CapsuleDataAppendFromTransformData(
+            &app->capsuleData, 
+            &app->characterData.xformData[i], 
+            app->characterData.radii[i], 
+            app->characterData.colors[i], 
+            app->characterData.opacities[i], 
+            !app->renderSettings.drawEndSites);
+    }
+
+    // Render
+
+    BeginDrawing();
+    ClearBackground(app->renderSettings.backgroundColor);
+
+    BeginMode3D(app->camera.cam3d);
+
+    // Set Shader Global Uniforms
+
+    Vector3 sunColorValue = { app->renderSettings.sunColor.r / 255.0f, app->renderSettings.sunColor.g / 255.0f, app->renderSettings.sunColor.b / 255.0f };
+    Vector3 skyColorValue = { app->renderSettings.skyColor.r / 255.0f, app->renderSettings.skyColor.g / 255.0f, app->renderSettings.skyColor.b / 255.0f };
+    float objectSpecularity = 0.5f;
+    float objectGlossiness = 10.0f;
+    float objectOpacity = 1.0f;
+
+    Vector3 sunLightPosition = Vector3RotateByQuaternion((Vector3){ 0.0f, 0.0f, 1.0f }, QuaternionFromAxisAngle((Vector3){ 0.0f, 1.0f, 0.0f }, app->renderSettings.sunAzimuth));
+    Vector3 sunLightAxis = Vector3Normalize(Vector3CrossProduct(sunLightPosition, (Vector3){ 0.0f, 1.0f, 0.0f }));
+    Vector3 sunLightDir = Vector3Negate(Vector3RotateByQuaternion(sunLightPosition, QuaternionFromAxisAngle(sunLightAxis, app->renderSettings.sunAltitude)));
+
+    SetShaderValue(app->shader, app->uniforms.cameraPosition, &app->camera.cam3d.position, SHADER_UNIFORM_VEC3);
+    SetShaderValue(app->shader, app->uniforms.exposure, &app->renderSettings.exposure, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.sunConeAngle, &app->renderSettings.sunLightConeAngle, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.sunDir, &sunLightDir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(app->shader, app->uniforms.sunStrength, &app->renderSettings.sunLightStrength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.sunColor, &sunColorValue, SHADER_UNIFORM_VEC3);
+    SetShaderValue(app->shader, app->uniforms.skyStrength, &app->renderSettings.skyLightStrength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.skyColor, &skyColorValue, SHADER_UNIFORM_VEC3);
+    SetShaderValue(app->shader, app->uniforms.ambientStrength, &app->renderSettings.ambientLightStrength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.groundStrength, &app->renderSettings.groundLightStrength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.objectSpecularity, &objectSpecularity, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.objectGlossiness, &objectGlossiness, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.objectOpacity, &objectOpacity, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(app->shader, app->uniforms.shadowMode, &app->renderSettings.shadowMode, SHADER_UNIFORM_INT);
+
+    // Draw Ground        
+
+    if (app->renderSettings.drawChecker)
+    {
+        int groundIsCapsule = 0;
+        Vector3 groundColor = { 0.9f, 0.9f, 0.9f };
+        
+        SetShaderValue(app->shader, app->uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
+        SetShaderValue(app->shader, app->uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
+
+        for (int i = 0; i < 11; i++)
+        {
+            for (int j = 0; j < 11; j++)
+            {
+                Vector3 groundSegmentPosition = {
+                    (((float)i / 10) - 0.5f) * 20.0f,
+                    -0.001f,
+                    (((float)j / 10) - 0.5f) * 20.0f, 
+                };
+                
+                app->capsuleData.aoCapsuleCount = 0;
+                app->capsuleData.shadowCapsuleCount = 0;
+                
+                if (app->renderSettings.drawCapsules && app->renderSettings.drawAO)
+                {
+                    CapsuleDataUpdateAOCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition);
+                }
+                
+                if (app->renderSettings.drawCapsules && app->renderSettings.shadowMode != 0)
+                {
+                    CapsuleDataUpdateShadowCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition, sunLightDir, app->renderSettings.sunLightConeAngle, app->renderSettings.shadowMode);
+                }
+                
+                int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
+                int shadowCapsuleCount = min(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
+                
+                SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);        
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
+                
+                SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
+                SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
+                SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);        
+                SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
+                
+                DrawModel(app->groundPlaneModel, groundSegmentPosition, 1.0f, WHITE);
+            }
+        }
+    }
+
+    // Draw Capsules
+
+    if (app->renderSettings.drawCapsules)
+    {
+        int capsuleIsCapsule = 1;
+        SetShaderValue(app->shader, app->uniforms.isCapsule, &capsuleIsCapsule, SHADER_UNIFORM_INT);
+        
+        // Depth sort back to front for transparency
+        
+        for (int i = 0; i < app->capsuleData.capsuleCount; i++)
+        {
+            app->capsuleData.capsuleSort[i].index = i;
+            app->capsuleData.capsuleSort[i].value = Vector3Distance(app->camera.cam3d.position, app->capsuleData.capsulePositions[i]);
+        }
+        
+        qsort(app->capsuleData.capsuleSort, app->capsuleData.capsuleCount, sizeof(CapsuleSort), CapsuleSortCompareLess);
+        
+        // Render
+        
+        for (int i = 0; i < app->capsuleData.capsuleCount; i++)
+        {
+            int j = app->capsuleData.capsuleSort[i].index;
+          
+            if (app->capsuleData.capsuleOpacities[j] < 1.0f)
+            {
+                rlDrawRenderBatchActive();        
+                rlDisableDepthTest(); 
+            }
+          
+            Vector3 capsuleStart = CapsuleStart(app->capsuleData.capsulePositions[j], app->capsuleData.capsuleRotations[j], app->capsuleData.capsuleHalfLengths[j]);
+            Vector3 capsuleVector = CapsuleVector(app->capsuleData.capsulePositions[j], app->capsuleData.capsuleRotations[j], app->capsuleData.capsuleHalfLengths[j]);
+
+            app->capsuleData.aoCapsuleCount = 0;
+            app->capsuleData.shadowCapsuleCount = 0;
+
+            if (app->renderSettings.drawAO)
+            {
+                CapsuleDataUpdateAOCapsulesForCapsule(&app->capsuleData, j);                  
+            }
+            
+            if (app->renderSettings.shadowMode != 0)
+            {
+                CapsuleDataUpdateShadowCapsulesForCapsule(&app->capsuleData, j, sunLightDir, app->renderSettings.sunLightConeAngle, app->renderSettings.shadowMode);
+            }
+            
+            int shadowCapsuleCount = min(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
+            int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);                
+            
+            SetShaderValue(app->shader, app->uniforms.objectColor, &app->capsuleData.capsuleColors[j], SHADER_UNIFORM_VEC3);
+            SetShaderValue(app->shader, app->uniforms.objectOpacity, &app->capsuleData.capsuleOpacities[j], SHADER_UNIFORM_FLOAT);
+
+            SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);        
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
+            
+            SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);        
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
+            
+            SetShaderValue(app->shader, app->uniforms.capsulePosition, &app->capsuleData.capsulePositions[j], SHADER_UNIFORM_VEC3);
+            SetShaderValue(app->shader, app->uniforms.capsuleRotation, &app->capsuleData.capsuleRotations[j], SHADER_UNIFORM_VEC4);
+            SetShaderValue(app->shader, app->uniforms.capsuleHalfLength, &app->capsuleData.capsuleHalfLengths[j], SHADER_UNIFORM_FLOAT);
+            SetShaderValue(app->shader, app->uniforms.capsuleRadius, &app->capsuleData.capsuleRadii[j], SHADER_UNIFORM_FLOAT);
+            SetShaderValue(app->shader, app->uniforms.capsuleStart, &capsuleStart, SHADER_UNIFORM_VEC3);
+            SetShaderValue(app->shader, app->uniforms.capsuleVector, &capsuleVector, SHADER_UNIFORM_VEC3);
+            
+            DrawModel(app->capsuleModel, Vector3Zero(), 1.0f, WHITE);
+            
+            if (app->capsuleData.capsuleOpacities[j] < 1.0f)
+            {
+                rlDrawRenderBatchActive();
+                rlEnableDepthTest();
+            }
+        }
+    }
+
+    // Grid
+
+    if (app->renderSettings.drawGrid)
+    {
+        DrawGrid(20, 1.0f);
+    }
+
+    // Origin
+
+    if (app->renderSettings.drawOrigin)
+    {
+        DrawTransform(
+            (Vector3){ 0.0f, 0.01f, 0.0f }, 
+            QuaternionIdentity(),
+            1.0f);
+    }  
+
+    // Disable Depth Test
+
+    rlDrawRenderBatchActive();        
+    rlDisableDepthTest(); 
+
+    // Draw Capsule Wireframes
+
+    if (app->renderSettings.drawWireframes)
+    {
+        DrawWireFrames(&app->capsuleData, DARKGRAY);
+    }
+
+    // Draw Bones
+
+    if (app->renderSettings.drawSkeleton)
+    {
+        for (int i = 0; i < app->characterData.count; i++)
+        {
+            DrawSkeleton(
+                &app->characterData.xformData[i],
+                app->renderSettings.drawEndSites,
+                DARKGRAY,
+                GRAY);
+        }
+    }
+
+    // Draw Joint Transforms
+
+    if (app->renderSettings.drawTransforms)
+    {
+        for (int i = 0; i < app->characterData.count; i++)
+        {
+            DrawTransforms(&app->characterData.xformData[i]);
+        }
+    }
+
+    // Re-Enable Depth Test
+
+    rlDrawRenderBatchActive();
+    rlEnableDepthTest();
+
+    // Rendering Done
+
+    EndMode3D();
+
+    // Draw UI
+
+    if (app->renderSettings.drawUI)
+    {
+        if (app->fileDialogState.windowActive) { GuiLock(); }
+
+        // Error Message
+        
+        DrawText(app->errMsg, 250, 20, 15, RED);
+
+        // Render Settings           
+        
+        GuiRenderSettings(&app->renderSettings, app->screenWidth, app->screenHeight);
+
+        // FPS
+        
+        if (app->renderSettings.drawFPS)
+        {
+            DrawFPS(230, 10);              
+        }
+        
+        // Camera Settings
+        
+        GuiOrbitCamera(&app->camera, &app->characterData);
+        
+        // Characters
+        
+        GuiCharacterData(&app->characterData, &app->fileDialogState, &app->scrubberSettings, app->errMsg, app->argc, app->argv);
+        
+        // Color Picker
+        
+        if (app->characterData.colorPickerActive)
+        {
+            GuiGroupBox((Rectangle){ app->screenWidth - 180, 450, 160, 140 }, "Color Picker");
+            GuiColorPicker((Rectangle){ app->screenWidth - 165, 465, 110, 110 }, NULL, &app->characterData.colors[app->characterData.active]);              
+        }
+        
+        // Scrubber
+        
+        GuiScrubberSettings(&app->scrubberSettings, &app->characterData, app->screenWidth, app->screenHeight);
+
+        if (app->fileDialogState.windowActive) { GuiUnlock(); }
+
+        // File Dialog
+
+        GuiWindowFileDialog(&app->fileDialogState);
+    }
+
+    // Done
+
+    EndDrawing();
 }
 
 //--------------------------------------
@@ -2921,790 +3761,99 @@ static inline void UpdateScrubberForBVHs(
 
 int main(int argc, char** argv)
 {
+    ApplicationState app;
+    
+    app.argc = argc;
+    app.argv = argv;
+  
     // Init Window
     
-    const int screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
-    const int screenHeight = ArgInt(argc, argv, "screenHeight", 720);
+    app.screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
+    app.screenHeight = ArgInt(argc, argv, "screenHeight", 720);
     
     SetConfigFlags(FLAG_VSYNC_HINT);
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    InitWindow(screenWidth, screenHeight, "BVHView");
+    InitWindow(app.screenWidth, app.screenHeight, "BVHView");
     SetTargetFPS(60);
-        
+    
     // Camera
 
-    Camera3D camera = { 0 };
-    camera.position = (Vector3){ 2.0f, 3.0f, 5.0f };
-    camera.target = (Vector3){ -0.5f, 1.0f, 0.0f };
-    camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera.fovy = ArgFloat(argc, argv, "cameraFOV", 45.0f);
-    camera.projection = CAMERA_PERSPECTIVE;
-    
-    float cameraAzimuth = ArgFloat(argc, argv, "cameraAzimuth", 0.0f);
-    float cameraAltitude = ArgFloat(argc, argv, "cameraAltitude", 0.4f);
-    float cameraDistance = ArgFloat(argc, argv, "cameraDistance", 4.0f);
-    bool cameraTrack = ArgBool(argc, argv, "cameraTrack", true);
-    int cameraTrackBone = ArgInt(argc, argv, "cameraTrackBone", 0);
-    
+    OrbitCameraInit(&app.camera, argc, argv);
+
     // Shader
     
-    Shader shader = LoadShaderFromMemory(shaderVS, shaderFS);
-    ShaderUniforms uniforms;
-    ShaderUniformsInit(&uniforms, shader);
+    app.shader = LoadShaderFromMemory(shaderVS, shaderFS);
+    ShaderUniformsInit(&app.uniforms, app.shader);
     
     // Meshes
     
-    Mesh groundPlaneMesh = GenMeshPlane(2.0f, 2.0f, 1, 1);
-    Model groundPlaneModel = LoadModelFromMesh(groundPlaneMesh);
-    groundPlaneModel.materials[0].shader = shader;
+    app.groundPlaneMesh = GenMeshPlane(2.0f, 2.0f, 1, 1);
+    app.groundPlaneModel = LoadModelFromMesh(app.groundPlaneMesh);
+    app.groundPlaneModel.materials[0].shader = app.shader;
     
-    Model capsuleModel = LoadOBJFromMemory(capsuleOBJ);
-    capsuleModel.materials[0].shader = shader;
+    app.capsuleModel = LoadOBJFromMemory(capsuleOBJ);
+    app.capsuleModel.materials[0].shader = app.shader;
 
-    // BVH, Transform, and Capsule Data
+    // Character Data
     
-    int bvhCount = 0;
-    int bvhActive = 0;
-
-    BVHData bvhData[MAX_BVH_FILES];
-    float bvhScales[MAX_BVH_FILES];
-    char bvhNames[MAX_BVH_FILES][128];
-    float bvhAutoScales[MAX_BVH_FILES];
-    Color bvhColors[MAX_BVH_FILES] = 
-    {
-        ORANGE,
-        VIOLET,
-        PINK,
-        PURPLE,
-        MAGENTA,
-        GREEN,
-    };
+    CharacterDataInit(&app.characterData, argc, argv);
     
-    TransformData xformData[MAX_BVH_FILES];
-    TransformData xformTmp0[MAX_BVH_FILES];
-    TransformData xformTmp1[MAX_BVH_FILES];
-    TransformData xformTmp2[MAX_BVH_FILES];
-    TransformData xformTmp3[MAX_BVH_FILES];
+    // Capsule Data
     
-    for (int i = 0; i < MAX_BVH_FILES; i++)
-    {
-        BVHDataInit(&bvhData[i]);
-        bvhScales[i] = 1.0f;
-        bvhNames[i][0] = '\0';
-        bvhAutoScales[i] = 1.0f;
-        TransformDataInit(&xformData[i]);
-        TransformDataInit(&xformTmp0[i]);
-        TransformDataInit(&xformTmp1[i]);
-        TransformDataInit(&xformTmp2[i]);
-        TransformDataInit(&xformTmp3[i]);    
-    }
+    CapsuleDataInit(&app.capsuleData);
     
-    CapsuleData capsuleData;
-    CapsuleDataInit(&capsuleData);
+    // Scrubber Settings
     
-    // Playback and Scrubber Settings
-    
-    bool playing = true;
-    bool looping = false;
-    float playTime = 0.0f;
-    float playSpeed = 1.0f;
-    bool frameSnap = true;
-    int sampleMode = 1;
-    float timeLimit = 0.0f;
-    int frameLimit = 0;
-    int frame = 0;
-    int frameMin = 0;
-    int frameMax = 0;
-    int frameMinSelect = 0;
-    int frameMaxSelect = 0;
-    bool frameMinEdit = false;
-    bool frameMaxEdit = false;
-    float timeMin = 0.0f;
-    float timeMax = 0.0f;
-    
+    ScrubberSettingsInit(&app.scrubberSettings, argc, argv);
     
     // Render Settings
     
-    RenderSettings renderSettings;
-    RenderSettingsInit(&renderSettings, argc, argv);
+    RenderSettingsInit(&app.renderSettings, argc, argv);
     
     // File Dialog
 
-    GuiWindowFileDialogState fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
+    app.fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
     
     // Load File(s)
     
-    char errMsg[512];
-    errMsg[0] = '\0';
+    app.errMsg[0] = '\0';
     
     for (int i = 1; i < argc; i++)
     {
         if (argv[i][0] == '-') { continue; }
+        
+        CharacterDataLoadFromFile(&app.characterData, argv[i], app.errMsg, 512);
+    }
+    
+    if (app.characterData.count > 0)
+    {
+        app.characterData.active = app.characterData.count - 1;
       
-        if (bvhCount == MAX_BVH_FILES)
-        {
-            snprintf(errMsg, 512, "Error: Maximum number of BVH files loaded (%i)", MAX_BVH_FILES);
-            break;
-        }
-        
-        if (LoadBVHFile(
-            argv[i], 
-            errMsg,
-            512,
-            &bvhData[bvhCount], 
-            &xformData[bvhCount],
-            &xformTmp0[bvhCount],
-            &xformTmp1[bvhCount],
-            &xformTmp2[bvhCount],
-            &xformTmp3[bvhCount],
-            bvhNames[bvhCount], 
-            128, 
-            &bvhScales[bvhCount],
-            &bvhAutoScales[bvhCount]))
-        {
-            bvhCount++;
-        }
+        CapsuleDataUpdateForCharacters(&app.capsuleData, &app.characterData);
+        ScrubberSettingsRecomputeLimits(&app.scrubberSettings, &app.characterData);
+        ScrubberSettingsInitMaxs(&app.scrubberSettings, &app.characterData);
+        UpdateWindowTitle(app.characterData.filePaths[app.characterData.active]);
     }
     
-    // Allocate capsule data
-    
-    UpdateCapsuleBuffersForBVHs(bvhData, bvhCount, &capsuleData);
-    
-    // Init Scrubber Frame Max
-    
-    UpdateScrubberForBVHs(
-        &frameLimit, 
-        &timeLimit, 
-        &frameMax,
-        &frameMaxSelect,
-        &timeMax,
-        bvhData, 
-        bvhCount,
-        bvhActive);
-            
-    // Go
-    
-    while (!WindowShouldClose())
-    {        
-        // File Dialog
-        
-        if (fileDialogState.SelectFilePressed)
-        {
-            if (bvhCount == MAX_BVH_FILES)
-            {
-                snprintf(errMsg, 512, "Error: Maximum number of BVH files loaded (%i)", MAX_BVH_FILES);
-            }
-            else
-            {
-                if (IsFileExtension(fileDialogState.fileNameText, ".bvh"))
-                {
-                    char fileNameToLoad[512];
-                    snprintf(fileNameToLoad, 512, "%s/%s", fileDialogState.dirPathText, fileDialogState.fileNameText);
-                    
-                    if (LoadBVHFile(
-                        fileNameToLoad, 
-                        errMsg,
-                        512,
-                        &bvhData[bvhCount], 
-                        &xformData[bvhCount],
-                        &xformTmp0[bvhCount],
-                        &xformTmp1[bvhCount],
-                        &xformTmp2[bvhCount],
-                        &xformTmp3[bvhCount],
-                        bvhNames[bvhCount], 
-                        128, 
-                        &bvhScales[bvhCount],
-                        &bvhAutoScales[bvhCount]))
-                    {
-                        bvhCount++;
-                        bvhActive = bvhCount - 1;
-                    }
-                    
-                    UpdateCapsuleBuffersForBVHs(bvhData, bvhCount, &capsuleData);
-                    UpdateScrubberForBVHs(
-                        &frameLimit, 
-                        &timeLimit, 
-                        &frameMax,
-                        &frameMaxSelect,
-                        &timeMax,
-                        bvhData, 
-                        bvhCount,
-                        bvhActive);
-                }
-                else
-                {
-                    snprintf(errMsg, 512, "Error: File '%s' is not a BVH file.", fileDialogState.fileNameText);
-                }
-            }
-            
-            fileDialogState.SelectFilePressed = false;
-        }
-        
-        // Drag and Drop Files
-        
-        if (IsFileDropped())
-        {
-            FilePathList droppedFiles = LoadDroppedFiles();
-            
-            for (int i = 0; i < droppedFiles.count; i++)
-            {
-                if (bvhCount == MAX_BVH_FILES)
-                {
-                    snprintf(errMsg, 512, "Error: Maximum number of BVH files loaded (%i)", MAX_BVH_FILES);
-                    break;
-                }
-              
-                if (LoadBVHFile(
-                    droppedFiles.paths[i], 
-                    errMsg,
-                    512,
-                    &bvhData[bvhCount], 
-                    &xformData[bvhCount],
-                    &xformTmp0[bvhCount],
-                    &xformTmp1[bvhCount],
-                    &xformTmp2[bvhCount],
-                    &xformTmp3[bvhCount],
-                    bvhNames[bvhCount], 
-                    128, 
-                    &bvhScales[bvhCount],
-                    &bvhAutoScales[bvhCount]))
-                {
-                    bvhCount++;
-                    bvhActive = bvhCount - 1;
-                }
-            }
-
-            UpdateCapsuleBuffersForBVHs(bvhData, bvhCount, &capsuleData);
-            UpdateScrubberForBVHs(
-                &frameLimit, 
-                &timeLimit, 
-                &frameMax,
-                &frameMaxSelect,
-                &timeMax,
-                bvhData, 
-                bvhCount,
-                bvhActive);
-
-            UnloadDroppedFiles(droppedFiles);
-        }
+    // Game Loop
   
-        // Move time forward
-        
-        if (playing)
-        {
-            playTime += playSpeed * GetFrameTime();
-            
-            if (playTime >= timeMax)
-            {
-                playTime = looping ? fmod(playTime, timeMax) + timeMin : timeMax;
-            }
-        }
-        
-        // Sample Animation Data
-        
-        for (int i = 0; i < bvhCount; i++)
-        {
-            if (sampleMode == 0)
-            {
-                TransformDataSampleFrameNearest(
-                    &xformData[i],
-                    &bvhData[i],
-                    playTime,
-                    bvhScales[i]);
-            }
-            else if (sampleMode == 1)
-            {
-                TransformDataSampleFrameLinear(
-                    &xformData[i],
-                    &xformTmp0[i],
-                    &xformTmp1[i],
-                    &bvhData[i],
-                    playTime,
-                    bvhScales[i]);
-            }
-            else
-            {
-                TransformDataSampleFrameCubic(
-                    &xformData[i],
-                    &xformTmp0[i],
-                    &xformTmp1[i],
-                    &xformTmp2[i],
-                    &xformTmp3[i],
-                    &bvhData[i],
-                    playTime,
-                    bvhScales[i]);
-            }
-                
-            TransformDataForwardKinematics(&xformData[i]);
-        }
-        
-        // Update Camera
-        
-        Vector3 cameraTarget = (Vector3){ 0.0f, 1.0f, 0.0f };
-
-        if (bvhCount > 0 && cameraTrack && cameraTrackBone < xformData[bvhActive].jointCount)
-        {
-            cameraTarget = xformData[bvhActive].globalPositions[cameraTrackBone];
-        }
-
-        if (!fileDialogState.windowActive)
-        {
-            OrbitCameraUpdate(
-                &camera, 
-                &cameraAzimuth,
-                &cameraAltitude,
-                &cameraDistance,
-                cameraTarget,
-                (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(0)) ? GetMouseDelta().x : 0.0f,
-                (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(0)) ? GetMouseDelta().y : 0.0f,
-                GetFrameTime());
-        }
-        
-        // Create Capsules
-        
-        CapsuleDataReset(&capsuleData);
-        for (int i = 0; i < bvhCount; i++)
-        {
-            CapsuleDataAppendFromTransformData(
-                &capsuleData, 
-                &xformData[i], 
-                renderSettings.maxCapsuleRadius, 
-                bvhColors[i], 
-                !renderSettings.drawEndSites);
-        }
-        
-        // Render
-        
-        BeginDrawing();
-        ClearBackground(renderSettings.backgroundColor);
-        
-        BeginMode3D(camera);
-        
-        // Set Global Uniforms
-        
-        Vector3 sunColorValue = { renderSettings.sunColor.r / 255.0f, renderSettings.sunColor.g / 255.0f, renderSettings.sunColor.b / 255.0f };
-        Vector3 skyColorValue = { renderSettings.skyColor.r / 255.0f, renderSettings.skyColor.g / 255.0f, renderSettings.skyColor.b / 255.0f };
-        float objectSpecularity = 0.5f;
-        float objectGlossiness = 10.0f;
-        float objectOpacity = 1.0f;
-        
-        Vector3 sunLightPosition = Vector3RotateByQuaternion((Vector3){ 0.0f, 0.0f, 1.0f }, QuaternionFromAxisAngle((Vector3){ 0.0f, 1.0f, 0.0f }, renderSettings.sunAzimuth));
-        Vector3 sunLightAxis = Vector3Normalize(Vector3CrossProduct(sunLightPosition, (Vector3){ 0.0f, 1.0f, 0.0f }));
-        Vector3 sunLightDir = Vector3Negate(Vector3RotateByQuaternion(sunLightPosition, QuaternionFromAxisAngle(sunLightAxis, renderSettings.sunAltitude)));
-        
-        SetShaderValue(shader, uniforms.cameraPosition, &camera.position, SHADER_UNIFORM_VEC3);
-        SetShaderValue(shader, uniforms.exposure, &renderSettings.exposure, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.sunConeAngle, &renderSettings.sunLightConeAngle, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.sunDir, &sunLightDir, SHADER_UNIFORM_VEC3);
-        SetShaderValue(shader, uniforms.sunStrength, &renderSettings.sunLightStrength, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.sunColor, &sunColorValue, SHADER_UNIFORM_VEC3);
-        SetShaderValue(shader, uniforms.skyStrength, &renderSettings.skyLightStrength, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.skyColor, &skyColorValue, SHADER_UNIFORM_VEC3);
-        SetShaderValue(shader, uniforms.ambientStrength, &renderSettings.ambientLightStrength, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.groundStrength, &renderSettings.groundLightStrength, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.objectSpecularity, &objectSpecularity, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.objectGlossiness, &objectGlossiness, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.objectOpacity, &objectOpacity, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, uniforms.shadowMode, &renderSettings.shadowMode, SHADER_UNIFORM_INT);
-
-        // Draw Ground        
-        
-        if (renderSettings.drawChecker)
-        {
-            int groundIsCapsule = 0;
-            Vector3 groundColor = { 0.9f, 0.9f, 0.9f };
-            
-            SetShaderValue(shader, uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
-            SetShaderValue(shader, uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
-
-            for (int i = 0; i < 11; i++)
-            {
-                for (int j = 0; j < 11; j++)
-                {
-                    Vector3 groundSegmentPosition = {
-                        (((float)i / 10) - 0.5f) * 20.0f,
-                        -0.001f,
-                        (((float)j / 10) - 0.5f) * 20.0f, 
-                    };
-                    
-                    capsuleData.aoCapsuleCount = 0;
-                    capsuleData.shadowCapsuleCount = 0;
-                    
-                    if (renderSettings.drawCapsules && renderSettings.drawAO)
-                    {
-                        CapsuleDataUpdateAOCapsulesForGroundSegment(&capsuleData, groundSegmentPosition);
-                    }
-                    
-                    if (renderSettings.drawCapsules && renderSettings.shadowMode != 0)
-                    {
-                        CapsuleDataUpdateShadowCapsulesForGroundSegment(&capsuleData, groundSegmentPosition, sunLightDir, renderSettings.sunLightConeAngle, renderSettings.shadowMode);
-                    }
-                    
-                    int aoCapsuleCount = min(capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
-                    int shadowCapsuleCount = min(capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-                    
-                    SetShaderValue(shader, uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
-                    SetShaderValueV(shader, uniforms.shadowCapsuleStarts, capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-                    SetShaderValueV(shader, uniforms.shadowCapsuleVectors, capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);        
-                    SetShaderValueV(shader, uniforms.shadowCapsuleRadii, capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
-                    
-                    SetShaderValue(shader, uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
-                    SetShaderValueV(shader, uniforms.aoCapsuleStarts, capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
-                    SetShaderValueV(shader, uniforms.aoCapsuleVectors, capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);        
-                    SetShaderValueV(shader, uniforms.aoCapsuleRadii, capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
-                    
-                    DrawModel(groundPlaneModel, groundSegmentPosition, 1.0f, WHITE);
-                }
-            }
-        }
-        
-        // Draw Capsules
-        
-        
-        if (renderSettings.drawCapsules)
-        {
-            int capsuleIsCapsule = 1;
-            SetShaderValue(shader, uniforms.isCapsule, &capsuleIsCapsule, SHADER_UNIFORM_INT);
-            SetShaderValue(shader, uniforms.objectOpacity, &renderSettings.capsuleOpacity, SHADER_UNIFORM_FLOAT);
-            
-            // Depth Sort
-            
-            for (int i = 0; i < capsuleData.capsuleCount; i++)
-            {
-                capsuleData.capsuleSort[i].index = i;
-                capsuleData.capsuleSort[i].value = Vector3Distance(camera.position, capsuleData.capsulePositions[i]);
-            }
-            
-            if (renderSettings.capsuleOpacity < 1.0f)
-            {
-                qsort(capsuleData.capsuleSort, capsuleData.capsuleCount, sizeof(CapsuleSort), CapsuleSortCompareLess);
-                rlDrawRenderBatchActive();        
-                rlDisableDepthTest(); 
-            }
-            else
-            {
-                qsort(capsuleData.capsuleSort, capsuleData.capsuleCount, sizeof(CapsuleSort), CapsuleSortCompareGreater);
-            }
-            
-            // Render
-            
-            for (int i = 0; i < capsuleData.capsuleCount; i++)
-            {
-                int j = capsuleData.capsuleSort[i].index;
-              
-                Vector3 capsuleStart = CapsuleStart(capsuleData.capsulePositions[j], capsuleData.capsuleRotations[j], capsuleData.capsuleHalfLengths[j]);
-                Vector3 capsuleVector = CapsuleVector(capsuleData.capsulePositions[j], capsuleData.capsuleRotations[j], capsuleData.capsuleHalfLengths[j]);
-
-                capsuleData.aoCapsuleCount = 0;
-                capsuleData.shadowCapsuleCount = 0;
-
-                if (renderSettings.drawAO)
-                {
-                    CapsuleDataUpdateAOCapsulesForCapsule(&capsuleData, j);                  
-                }
-                
-                if (renderSettings.shadowMode != 0)
-                {
-                    CapsuleDataUpdateShadowCapsulesForCapsule(&capsuleData, j, sunLightDir, renderSettings.sunLightConeAngle, renderSettings.shadowMode);
-                }
-                
-                int shadowCapsuleCount = min(capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-                int aoCapsuleCount = min(capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);                
-                
-                SetShaderValue(shader, uniforms.objectColor, &capsuleData.capsuleColors[j], SHADER_UNIFORM_VEC3);
-
-                SetShaderValue(shader, uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
-                SetShaderValueV(shader, uniforms.shadowCapsuleStarts, capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-                SetShaderValueV(shader, uniforms.shadowCapsuleVectors, capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);        
-                SetShaderValueV(shader, uniforms.shadowCapsuleRadii, capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
-                
-                SetShaderValue(shader, uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
-                SetShaderValueV(shader, uniforms.aoCapsuleStarts, capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
-                SetShaderValueV(shader, uniforms.aoCapsuleVectors, capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);        
-                SetShaderValueV(shader, uniforms.aoCapsuleRadii, capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
-                
-                SetShaderValue(shader, uniforms.capsulePosition, &capsuleData.capsulePositions[j], SHADER_UNIFORM_VEC3);
-                SetShaderValue(shader, uniforms.capsuleRotation, &capsuleData.capsuleRotations[j], SHADER_UNIFORM_VEC4);
-                SetShaderValue(shader, uniforms.capsuleHalfLength, &capsuleData.capsuleHalfLengths[j], SHADER_UNIFORM_FLOAT);
-                SetShaderValue(shader, uniforms.capsuleRadius, &capsuleData.capsuleRadii[j], SHADER_UNIFORM_FLOAT);
-                SetShaderValue(shader, uniforms.capsuleStart, &capsuleStart, SHADER_UNIFORM_VEC3);
-                SetShaderValue(shader, uniforms.capsuleVector, &capsuleVector, SHADER_UNIFORM_VEC3);
-                
-                DrawModel(capsuleModel, Vector3Zero(), 1.0f, WHITE);
-            }
-        }
-        
-        if (renderSettings.capsuleOpacity < 1.0f)
-        {
-            rlDrawRenderBatchActive();
-            rlEnableDepthTest();
-        }
-        
-        // Draw Debug
-        
-        if (renderSettings.drawGrid)
-        {
-            DrawGrid(20, 1.0f);
-        }
-        
-        if (renderSettings.drawOrigin)
-        {
-            DrawTransform(
-                (Vector3){ 0.0f, 0.01f, 0.0f }, 
-                QuaternionIdentity(),
-                1.0f);
-        }  
-        
-        rlDrawRenderBatchActive();        
-        rlDisableDepthTest(); 
-        
-        // Draw Capsule Wireframes
-        
-        if (renderSettings.drawWireframes)
-        {
-            DrawWireFrames(&capsuleData, DARKGRAY);
-        }
-        
-        // Draw Bones
-        
-        if (renderSettings.drawSkeleton)
-        {
-            for (int i = 0; i < bvhCount; i++)
-            {
-                DrawSkeleton(
-                    &xformData[i],
-                    renderSettings.drawEndSites,
-                    DARKGRAY,
-                    GRAY);
-            }
-        }
-        
-        // Draw Joint Transforms
-        
-        if (renderSettings.drawTransforms)
-        {
-            for (int i = 0; i < bvhCount; i++)
-            {
-                DrawTransforms(&xformData[i]);
-            }
-        }
-        
-        rlDrawRenderBatchActive();
-        rlEnableDepthTest();
-        
-        EndMode3D();
-        
-        // Draw UI
-        
-        if (IsKeyPressed(KEY_H) && !fileDialogState.windowActive)
-        {
-            renderSettings.drawUI = !renderSettings.drawUI;
-        }
-        
-        if (renderSettings.drawUI)
-        {
-            if (fileDialogState.windowActive) { GuiLock(); }
-
-            // Error Message
-            
-            DrawText(errMsg, 250, 20, 15, RED);
-
-            // Rendering            
-            
-            GuiRenderSettings(&renderSettings, screenWidth, screenHeight);
-        
-            // FPS
-            
-            if (renderSettings.drawFPS)
-            {
-                DrawFPS(230, 10);              
-            }
-            
-            // Camera
-            
-            GuiGroupBox((Rectangle){ 20, 10, 190, 200 }, "Camera");
-            
-            GuiLabel((Rectangle){ 30, 20, 150, 20 }, "Ctrl + Left Click - Rotate");
-            GuiLabel((Rectangle){ 30, 40, 150, 20 }, "Mouse Scroll - Zoom");
-            GuiLabel((Rectangle){ 30, 60, 150, 20 }, TextFormat("Target: [% 5.3f % 5.3f % 5.3f]", cameraTarget.x, cameraTarget.y, cameraTarget.z));
-            GuiLabel((Rectangle){ 30, 80, 150, 20 }, TextFormat("Azimuth: %5.3f", cameraAzimuth));
-            GuiLabel((Rectangle){ 30, 100, 150, 20 }, TextFormat("Altitude: %5.3f", cameraAltitude));
-            GuiLabel((Rectangle){ 30, 120, 150, 20 }, TextFormat("Distance: %5.3f", cameraDistance));
-            
-            if (bvhCount > 0)
-            {
-                GuiToggle((Rectangle){ 30, 150, 100, 20 }, "Track", &cameraTrack);
-                GuiComboBox((Rectangle){ 30, 180, 150, 20 }, bvhData[bvhActive].jointNamesCombo, &cameraTrackBone);          
-            }
-            
-            // Files
-            
-            GuiGroupBox((Rectangle){ 20, 230, 190, 40 + bvhCount * 60 }, "Files");
-            
-            if (GuiButton((Rectangle){ 30, 240, 110, 20 }, "Open"))
-            {
-                fileDialogState.windowActive = true;
-            }
-            
-            if (GuiButton((Rectangle){ 150, 240, 50, 20 }, "Clear"))
-            {
-                bvhCount = 0;
-                errMsg[0] = '\0';
-            }
-            
-            for (int i = 0; i < bvhCount; i++)
-            {
-                char bvhNameShort[20];
-                bvhNameShort[0] = '\0';
-                if (strlen(bvhNames[i]) + 1 <= 20)
-                {
-                    strcat(bvhNameShort, bvhNames[i]);
-                }
-                else
-                {
-                    memcpy(bvhNameShort, bvhNames[i], 16);
-                    memcpy(bvhNameShort + 16, "...", 4);
-                }
-                
-                bool bvhSelected = i == bvhActive;
-                GuiToggle((Rectangle){ 30, 270 + i * 60, 140, 20 }, bvhNameShort, &bvhSelected);
-                
-                if (bvhSelected)
-                {
-                    bvhActive = i;
-                    cameraTrackBone = min(cameraTrackBone, xformData[bvhActive].jointCount - 1);
-                }
-                
-                DrawRectangleRec((Rectangle){ 180, 270 + i * 60, 20, 20 }, bvhColors[i]);
-                DrawRectangleLinesEx((Rectangle){ 180, 270 + i * 60, 20, 20 }, 1, GRAY);
-                
-                bool scaleM = bvhScales[i] == 1.0f;
-                GuiToggle((Rectangle){ 30, 300 + i * 60, 30, 20 }, "m", &scaleM); if (scaleM) { bvhScales[i] = 1.0f; }
-                bool scaleCM = bvhScales[i] == 0.01f;
-                GuiToggle((Rectangle){ 65, 300 + i * 60, 30, 20 }, "cm", &scaleCM); if (scaleCM) { bvhScales[i] = 0.01f; }
-                bool scaleInches = bvhScales[i] == 0.0254f;
-                GuiToggle((Rectangle){ 100, 300 + i * 60, 30, 20 }, "inch", &scaleInches); if (scaleInches) { bvhScales[i] = 0.0254f; }
-                bool scaleFeet = bvhScales[i] == 0.3048f;
-                GuiToggle((Rectangle){ 135, 300 + i * 60, 30, 20 }, "feet", &scaleFeet); if (scaleFeet) { bvhScales[i] = 0.3048f; }
-                bool scaleAuto = bvhScales[i] == bvhAutoScales[i];
-                GuiToggle((Rectangle){ 170, 300 + i * 60, 30, 20 }, "auto", &scaleAuto); if (scaleAuto) { bvhScales[i] = bvhAutoScales[i]; }
-            }
-            
-            // Scrubber
-            
-            if (bvhCount > 0)
-            {
-                GuiLabel((Rectangle){ 160, screenHeight - 80, 150, 20 }, TextFormat("Frame Time: %f", bvhData[bvhActive].frameTime));
-                GuiCheckBox((Rectangle){ 290, screenHeight - 80, 20, 20 }, "Snap to Frame", &frameSnap);
-                GuiComboBox((Rectangle){ 400, screenHeight - 80, 100, 20 }, "Nearest;Linear;Cubic", &sampleMode);
-            
-                GuiToggle((Rectangle){ screenWidth / 2 - 25, screenHeight - 80, 50, 20 }, "Play", &playing);
-                GuiToggle((Rectangle){ screenWidth / 2 - 85, screenHeight - 80, 50, 20 }, "Loop", &looping);
-                
-                bool speed01x = playSpeed == 0.1f;
-                GuiToggle((Rectangle){ screenWidth / 2 + 40, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { playSpeed = 0.1f; }
-                bool speed05x = playSpeed == 0.5f;
-                GuiToggle((Rectangle){ screenWidth / 2 + 80, screenHeight - 80, 30, 20 }, "0.5x", &speed05x); if (speed05x) { playSpeed = 0.5f; }
-                bool speed1x = playSpeed == 1.0f;
-                GuiToggle((Rectangle){ screenWidth / 2 + 120, screenHeight - 80, 30, 20 }, "1x", &speed1x); if (speed1x) { playSpeed = 1.0f; }
-                bool speed2x = playSpeed == 2.0f;
-                GuiToggle((Rectangle){ screenWidth / 2 + 160, screenHeight - 80, 30, 20 }, "2x", &speed2x); if (speed2x) { playSpeed = 2.0f; }
-                bool speed4x = playSpeed == 4.0f;
-                GuiToggle((Rectangle){ screenWidth / 2 + 200, screenHeight - 80, 30, 20 }, "4x", &speed4x); if (speed4x) { playSpeed = 4.0f; }
-                GuiSliderBar((Rectangle){ screenWidth / 2 + 240, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", playSpeed), &playSpeed, 0.0f, 4.0f);
-              
-                frame = clamp((int)(playTime / bvhData[bvhActive].frameTime + 0.5f), frameMin, frameMax);
-
-                if (GuiValueBox(
-                    (Rectangle){ 100, screenHeight - 80, 50, 20 }, 
-                    "Min   ", &frameMinSelect, 0, frameLimit, frameMinEdit))
-                {
-                    frameMinEdit = !frameMinEdit;
-                    if (!frameMinEdit)
-                    {
-                        frameMin = frameMinSelect;
-                        frameMaxSelect = frameMaxSelect < frameMin ? frameMin : frameMaxSelect;
-                        frameMax = frameMaxSelect;
-                        frame = frame < frameMin ? frameMin : frame;
-                        playTime = frame * bvhData[bvhActive].frameTime;
-                        timeMin = frameMin * bvhData[bvhActive].frameTime;
-                        timeMax = frameMax * bvhData[bvhActive].frameTime;
-                    }
-                }
-                
-                if (GuiValueBox(
-                    (Rectangle){ screenWidth - 170, screenHeight - 80, 50, 20 }, 
-                    "Max   ", &frameMaxSelect, 0, frameLimit, frameMaxEdit))
-                {
-                    frameMaxEdit = !frameMaxEdit;
-                    
-                    if (!frameMaxEdit)
-                    {
-                        frameMax = frameMaxSelect;
-                        frameMinSelect = frameMinSelect > frameMax ? frameMax : frameMinSelect;
-                        frameMin = frameMinSelect;
-                        frame = frame > frameMax ? frameMax : frame;
-                        playTime = frame * bvhData[bvhActive].frameTime;
-                        timeMin = frameMin * bvhData[bvhActive].frameTime;
-                        timeMax = frameMax * bvhData[bvhActive].frameTime;
-                    }
-                }
-                
-                GuiLabel(
-                    (Rectangle){ screenWidth - 110, screenHeight - 80, 100, 20 }, 
-                    TextFormat("of %i", frameLimit));
-                
-                float frameFloatPrev = frameSnap ? (float)frame : playTime / bvhData[bvhActive].frameTime;
-                float frameFloat = frameFloatPrev;
-                
-                GuiSliderBar(
-                    (Rectangle){ 100, screenHeight - 50, screenWidth - 220, 20 }, 
-                    TextFormat("%5.2f", playTime), 
-                    TextFormat("%i", frame),
-                    &frameFloat, 
-                    (float)frameMin, (float)frameMax);
-                
-                if (frameFloat != frameFloatPrev)
-                {
-                    if (frameSnap)
-                    {
-                        frame = clamp((int)(frameFloat + 0.5f), frameMin, frameMax);
-                        playTime = frame * bvhData[bvhActive].frameTime;
-                    }
-                    else
-                    {
-                        playTime = frameFloat * bvhData[bvhActive].frameTime;
-                    }
-                }
-            }
-        
-            GuiUnlock();
-            
-            GuiWindowFileDialog(&fileDialogState);
-        }
-        
-        // Done
-
-        EndDrawing();
+#if defined(PLATFORM_WEB)
+    emscripten_set_main_loop_arg(ApplicationUpdate, &app, 0, 1);
+#else
+    while (!WindowShouldClose())
+    {
+        ApplicationUpdate(&app);
     }
+#endif
   
     // Unload stuff and finish
   
-    CapsuleDataFree(&capsuleData);
-  
-    for (int i = 0; i < bvhCount; i++)
-    {
-        TransformDataFree(&xformData[i]);
-        TransformDataFree(&xformTmp0[i]);
-        TransformDataFree(&xformTmp1[i]);
-        TransformDataFree(&xformTmp2[i]);
-        TransformDataFree(&xformTmp3[i]);
-        BVHDataFree(&bvhData[i]);
-    }
+    CapsuleDataFree(&app.capsuleData);
+    CharacterDataFree(&app.characterData);
     
-    UnloadModel(capsuleModel);    
-    UnloadModel(groundPlaneModel);
-    UnloadShader(shader);
+    UnloadModel(app.capsuleModel);    
+    UnloadModel(app.groundPlaneModel);
+    UnloadShader(app.shader);
 
     CloseWindow();
 
