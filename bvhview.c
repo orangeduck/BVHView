@@ -55,30 +55,14 @@ static inline float clampf(float x, float min, float max)
     return x > max ? max : x < min ? min : x;
 }
 
+static inline float saturatef(float x)
+{
+    return clampf(x, 0.0f, 1.0f);
+}
+
 static inline float deg2radf(const float x)
 {
     return x * (PIf / 180.0f);
-}
-
-static inline float fast_acosf(float x)
-{
-    float y = fabs(x);
-    float p = -0.1565827f * y + 1.570796f;
-    p *= sqrtf(maxf(1.0f - y, 0.0f));
-    return x >= 0.0f ? p : PIf - p;
-}
-
-static inline float fast_positive_acosf(float x)
-{
-    float p = -0.1565827f * x + 1.570796f;
-    return p * sqrtf(maxf(1.0f - x, 0.0f));
-}  
-
-static inline float fast_positive_atanf(float x)
-{
-    float w = x > 1.0f ? 1.0f / x : x;
-    float y = (PIf / 4.0f)*w - w*(w - 1.0f)*(0.2447f + 0.0663f*w);
-    return fabs(x > 1.0f ? PIf / 2.0f - y : y);
 }
 
 //--------------------------------------
@@ -92,9 +76,9 @@ static inline Vector3 Vector3Hermite(Vector3 p0, Vector3 p1, Vector3 v0, Vector3
     float w1 = 3*x*x - 2*x*x*x;
     float w2 = x*x*x - 2*x*x + x;
     float w3 = x*x*x - x*x;
-    
+
     return Vector3Add(
-        Vector3Add(Vector3Scale(p0, w0), Vector3Scale(p1, w1)), 
+        Vector3Add(Vector3Scale(p0, w0), Vector3Scale(p1, w1)),
         Vector3Add(Vector3Scale(v0, w2), Vector3Scale(v1, w3)));
 }
 
@@ -103,6 +87,24 @@ static inline Vector3 Vector3InterpolateCubic(Vector3 p0, Vector3 p1, Vector3 p2
     Vector3 v1 = Vector3Scale(Vector3Add(Vector3Subtract(p1, p0), Vector3Subtract(p2, p1)), 0.5f);
     Vector3 v2 = Vector3Scale(Vector3Add(Vector3Subtract(p2, p1), Vector3Subtract(p3, p2)), 0.5f);
     return Vector3Hermite(p1, p2, v1, v2, alpha);
+}
+
+// This is a save version of QuaternionBetween which returns a 180 deg rotation
+// at the singularity where vectors are facing exactly in opposite directions
+static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
+{
+    Vector3 c = Vector3CrossProduct(p, q);
+
+    Quaternion o = {
+        c.x,
+        c.y,
+        c.z,
+        sqrtf(Vector3DotProduct(p, p) * Vector3DotProduct(q, q)) + Vector3DotProduct(p, q),
+    };
+    
+    return QuaternionLength(o) < 1e-8f ?
+        QuaternionFromAxisAngle((Vector3){ 1.0f, 0.0f, 0.0f }, PIf) :
+        QuaternionNormalize(o);
 }
 
 static inline Quaternion QuaternionAbsolute(Quaternion q)
@@ -114,14 +116,14 @@ static inline Quaternion QuaternionAbsolute(Quaternion q)
         q.z = -q.z;
         q.w = -q.w;
     }
-  
+
     return q;
 }
 
 static inline Quaternion QuaternionExp(Vector3 v)
 {
     float halfangle = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
-	
+
     if (halfangle < 1e-4f)
     {
         return QuaternionNormalize((Quaternion){ v.x, v.y, v.z, 1.0f });
@@ -137,7 +139,7 @@ static inline Quaternion QuaternionExp(Vector3 v)
 static inline Vector3 QuaternionLog(Quaternion q)
 {
     float length = sqrtf(q.x*q.x + q.y*q.y + q.z*q.z);
-	
+
     if (length < 1e-4f)
     {
         return (Vector3){ q.x, q.y, q.z };
@@ -149,7 +151,7 @@ static inline Vector3 QuaternionLog(Quaternion q)
     }
 }
 
-static inline Vector3 QuaternionToScaleAngleAxis(Quaternion q)
+static inline Vector3 QuaternionToScaledAngleAxis(Quaternion q)
 {
     return Vector3Scale(QuaternionLog(q), 2.0f);
 }
@@ -159,44 +161,31 @@ static inline Quaternion QuaternionFromScaledAngleAxis(Vector3 v)
     return QuaternionExp(Vector3Scale(v, 0.5f));
 }
 
+// Cubic Quaternion Interpolation
+// See: https://theorangeduck.com/page/cubic-interpolation-quaternions
+
 static inline Quaternion QuaternionHermite(Quaternion r0, Quaternion r1, Vector3 v0, Vector3 v1, float alpha)
 {
     float x = alpha;
     float w1 = 3*x*x - 2*x*x*x;
     float w2 = x*x*x - 2*x*x + x;
     float w3 = x*x*x - x*x;
-    
-    Vector3 r1_sub_r0 = QuaternionToScaleAngleAxis(QuaternionAbsolute(QuaternionMultiply(r1, QuaternionInvert(r0))));   
-    
+
+    Vector3 r1r0 = QuaternionToScaledAngleAxis(QuaternionAbsolute(QuaternionMultiply(r1, QuaternionInvert(r0))));
+
     return QuaternionMultiply(QuaternionFromScaledAngleAxis(
-        Vector3Add(Vector3Add(Vector3Scale(r1_sub_r0, w1), Vector3Scale(v0, w2)), Vector3Scale(v1, w3))), r0);
+        Vector3Add(Vector3Add(Vector3Scale(r1r0, w1), Vector3Scale(v0, w2)), Vector3Scale(v1, w3))), r0);
 }
 
 static inline Quaternion QuaternionInterpolateCubic(Quaternion r0, Quaternion r1, Quaternion r2, Quaternion r3, float alpha)
 {
-    Vector3 r1_sub_r0 = QuaternionToScaleAngleAxis(QuaternionAbsolute(QuaternionMultiply(r1, QuaternionInvert(r0))));
-    Vector3 r2_sub_r1 = QuaternionToScaleAngleAxis(QuaternionAbsolute(QuaternionMultiply(r2, QuaternionInvert(r1))));
-    Vector3 r3_sub_r2 = QuaternionToScaleAngleAxis(QuaternionAbsolute(QuaternionMultiply(r3, QuaternionInvert(r2))));
-  
-    Vector3 v1 = Vector3Scale(Vector3Add(r1_sub_r0, r2_sub_r1), 0.5f);
-    Vector3 v2 = Vector3Scale(Vector3Add(r2_sub_r1, r3_sub_r2), 0.5f);
-    return QuaternionHermite(r1, r2, v1, v2, alpha);
-}
+    Vector3 r1r0 = QuaternionToScaledAngleAxis(QuaternionAbsolute(QuaternionMultiply(r1, QuaternionInvert(r0))));
+    Vector3 r2r1 = QuaternionToScaledAngleAxis(QuaternionAbsolute(QuaternionMultiply(r2, QuaternionInvert(r1))));
+    Vector3 r3r2 = QuaternionToScaledAngleAxis(QuaternionAbsolute(QuaternionMultiply(r3, QuaternionInvert(r2))));
 
-static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
-{
-    Vector3 c = Vector3CrossProduct(p, q);
-    
-    Quaternion o = {
-        c.x, 
-        c.y, 
-        c.z,
-        sqrtf(Vector3DotProduct(p, p) * Vector3DotProduct(q, q)) + Vector3DotProduct(p, q),
-    };
-    
-    return QuaternionLength(o) < 1e-8f ? 
-        QuaternionFromAxisAngle((Vector3){ 1.0f, 0.0f, 0.0f }, PIf) :
-        QuaternionNormalize(o);
+    Vector3 v1 = Vector3Scale(Vector3Add(r1r0, r2r1), 0.5f);
+    Vector3 v2 = Vector3Scale(Vector3Add(r2r1, r3r2), 0.5f);
+    return QuaternionHermite(r1, r2, v1, v2, alpha);
 }
 
 //--------------------------------------
@@ -211,54 +200,54 @@ static inline char* ArgFind(int argc, char** argv, const char* name)
           argv[i][0] == '-' &&
           argv[i][1] == '-' &&
           strstr(argv[i] + 2, name) == argv[i] + 2)
-        { 
+        {
             char* argStart = strchr(argv[i], '=');
             return argStart ? argStart + 1 : NULL;
         }
     }
-    
+
     return NULL;
 }
 
 static inline float ArgFloat(int argc, char** argv, const char* name, float defaultValue)
-{ 
+{
     char* value = ArgFind(argc, argv, name);
     if (!value) { return defaultValue; }
-    
+
     errno = 0;
     float output = strtof(value, NULL);
     if (errno == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return output; }
-    
+
     printf("ERROR: Could not parse value '%s' given for option '%s' as float\n", value, name);
     return defaultValue;
 }
 
 static inline int ArgInt(int argc, char** argv, const char* name, int defaultValue)
-{ 
+{
     char* value = ArgFind(argc, argv, name);
     if (!value) { return defaultValue; }
 
     errno = 0;
     int output = (int)strtol(value, NULL, 10);
     if (errno == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return output; }
-    
+
     printf("ERROR: Could not parse value '%s' given for option '%s' as int\n", value, name);
     return defaultValue;
 }
 
 static inline int ArgBool(int argc, char** argv, const char* name, bool defaultValue)
-{ 
+{
     char* value = ArgFind(argc, argv, name);
     if (!value) { return defaultValue; }
     if (strcmp(value, "true") == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return true; }
     if (strcmp(value, "false") == 0) { printf("INFO: Parsed option '%s' as '%s'\n", name, value); return false; }
-    
+
     printf("ERROR: Could not parse value '%s' given for option '%s' as bool\n", value, name);
     return defaultValue;
 }
 
 static inline int ArgEnum(int argc, char** argv, const char* name, int optionCount, const char* options[], int defaultValue)
-{ 
+{
     char* value = ArgFind(argc, argv, name);
     if (!value) { return defaultValue; }
 
@@ -270,13 +259,13 @@ static inline int ArgEnum(int argc, char** argv, const char* name, int optionCou
             return i;
         }
     }
-    
+
     printf("ERROR: Could not parse value '%s' given for option '%s' as enum\n", value, name);
     return defaultValue;
 }
 
 static inline const char* ArgStr(int argc, char** argv, const char* name, const char* defaultValue)
-{ 
+{
     char* value = ArgFind(argc, argv, name);
     if (!value) { return defaultValue; }
 
@@ -285,7 +274,7 @@ static inline const char* ArgStr(int argc, char** argv, const char* name, const 
 }
 
 static inline Color ArgColor(int argc, char** argv, const char* name, Color defaultValue)
-{ 
+{
     char* value = ArgFind(argc, argv, name);
     if (!value) { return defaultValue; }
 
@@ -305,14 +294,14 @@ static inline Color ArgColor(int argc, char** argv, const char* name, Color defa
 //--------------------------------------
 
 typedef struct {
-  
+
     Camera3D cam3d;
     float azimuth;
     float altitude;
     float distance;
     bool track;
     int trackBone;
-  
+
 } OrbitCamera;
 
 static inline void OrbitCameraInit(OrbitCamera* camera, int argc, char** argv)
@@ -323,7 +312,7 @@ static inline void OrbitCameraInit(OrbitCamera* camera, int argc, char** argv)
     camera->cam3d.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     camera->cam3d.fovy = ArgFloat(argc, argv, "cameraFOV", 45.0f);
     camera->cam3d.projection = CAMERA_PERSPECTIVE;
-    
+
     camera->azimuth = ArgFloat(argc, argv, "cameraAzimuth", 0.0f);
     camera->altitude = ArgFloat(argc, argv, "cameraAltitude", 0.4f);
     camera->distance = ArgFloat(argc, argv, "cameraDistance", 4.0f);
@@ -342,13 +331,13 @@ static inline void OrbitCameraUpdate(
     camera->azimuth = camera->azimuth + 1.0f * dt * -mouseDx;
     camera->altitude = clampf(camera->altitude + 1.0f * dt * mouseDy, 0.0, 0.4f * PIf);
     camera->distance = clampf(camera->distance +  20.0f * dt * -mouseWheel, 0.1f, 100.0f);
-    
+
     Quaternion rotationAzimuth = QuaternionFromAxisAngle((Vector3){0, 1, 0}, camera->azimuth);
     Vector3 position = Vector3RotateByQuaternion((Vector3){0, 0, camera->distance}, rotationAzimuth);
     Vector3 axis = Vector3Normalize(Vector3CrossProduct(position, (Vector3){0, 1, 0}));
-    
+
     Quaternion rotationAltitude = QuaternionFromAxisAngle(axis, camera->altitude);
-    
+
     Vector3 eye = Vector3Add(target, Vector3RotateByQuaternion(position, rotationAltitude));
 
     camera->cam3d.target = target;
@@ -370,7 +359,7 @@ enum
     CHANNELS_MAX = 6,
 };
 
-typedef struct 
+typedef struct
 {
     int parent;
     char* name;
@@ -378,7 +367,7 @@ typedef struct
     int channelCount;
     char channels[CHANNELS_MAX];
     bool endSite;
-    
+
 } BVHJointData;
 
 static void BVHJointDataInit(BVHJointData* data)
@@ -404,19 +393,19 @@ static void BVHJointDataFree(BVHJointData* data)
 typedef struct
 {
     // Hierarchy Data
-  
+
     int jointCount;
     BVHJointData* joints;
-    
+
     // Motion Data
-    
+
     int frameCount;
     int channelCount;
     float frameTime;
     float* motionData;
-    
+
     // Extra Data
-   
+
     char* jointNamesCombo;
 
 } BVHData;
@@ -439,7 +428,7 @@ static void BVHDataFree(BVHData* bvh)
         BVHJointDataFree(&bvh->joints[i]);
     }
     free(bvh->joints);
-    
+
     free(bvh->motionData);
     free(bvh->jointNamesCombo);
 }
@@ -457,17 +446,17 @@ static void BVHDataComputeJointNamesCombo(BVHData* bvh)
     int total_size = 0;
     for (int i = 0; i < bvh->jointCount; i++)
     {
-        total_size += (i > 0 ? 1 : 0) + strlen(bvh->joints[i].name);   
+        total_size += (i > 0 ? 1 : 0) + strlen(bvh->joints[i].name);
     }
     total_size++;
-  
+
     bvh->jointNamesCombo = malloc(total_size);
     bvh->jointNamesCombo[0] = '\0';
     for (int i = 0; i < bvh->jointCount; i++)
     {
         if (i > 0)
         {
-            strcat(bvh->jointNamesCombo, ";");                  
+            strcat(bvh->jointNamesCombo, ";");
         }
         strcat(bvh->jointNamesCombo, bvh->joints[i].name);
     }
@@ -483,14 +472,14 @@ enum
 };
 
 typedef struct {
-  
+
     const char* filename;
     int offset;
     const char* data;
     int row;
     int col;
     char err[PARSER_ERR_MAX];
-  
+
 } Parser;
 
 static void ParserInit(Parser* par, const char* filename, const char* data)
@@ -547,7 +536,7 @@ static void ParserInc(Parser* par)
     {
         par->col++;
     }
-    
+
     par->offset++;
 }
 
@@ -605,7 +594,7 @@ static bool BVHParseString(Parser* par, const char* string)
 static bool BVHParseNewline(Parser* par)
 {
     BVHParseWhitespace(par);
-    
+
     if (ParserMatch(par, '\n'))
     {
         ParserInc(par);
@@ -616,7 +605,7 @@ static bool BVHParseNewline(Parser* par)
     {
         ParserError(par, "expected newline at '%s'", ParserCharName(ParserPeek(par)));
         return false;
-    }    
+    }
 }
 
 static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
@@ -625,7 +614,7 @@ static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
 
     char buffer[256];
     int chrnum = 0;
-    while (chrnum < 255 && ParserOneOf(par, 
+    while (chrnum < 255 && ParserOneOf(par,
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"))
     {
         buffer[chrnum] = ParserPeek(par);
@@ -633,7 +622,7 @@ static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
         ParserInc(par);
     }
     buffer[chrnum] = '\0';
-    
+
     if (chrnum > 0)
     {
         BVHJointDataRename(jnt, buffer);
@@ -644,7 +633,7 @@ static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
     {
         ParserError(par, "expected joint name at '%s'", ParserCharName(ParserPeek(par)));
         return false;
-    }   
+    }
 }
 
 static bool BVHParseFloat(float* out, Parser* par)
@@ -654,7 +643,7 @@ static bool BVHParseFloat(float* out, Parser* par)
     char* end;
     errno = 0;
     (*out) = strtof(par->data + par->offset, &end);
-    
+
     if (errno == 0)
     {
         ParserAdvance(par, end - (par->data + par->offset));
@@ -671,10 +660,10 @@ static bool BVHParseInt(int* out, Parser* par)
 {
     BVHParseWhitespace(par);
 
-    char* end;    
+    char* end;
     errno = 0;
     (*out) = (int)strtol(par->data + par->offset, &end, 10);
-    
+
     if (errno == 0)
     {
         ParserAdvance(par, end - (par->data + par->offset));
@@ -698,9 +687,9 @@ static bool BVHParseJointOffset(BVHJointData* jnt, Parser* par)
 }
 
 static bool BVHParseChannelEnum(
-    char* channel, 
+    char* channel,
     Parser* par,
-    const char* channelName, 
+    const char* channelName,
     char channelValue)
 {
     BVHParseWhitespace(par);
@@ -719,37 +708,37 @@ static bool BVHParseChannel(char* channel, Parser* par)
         ParserError(par, "expected channel at end of file");
         return false;
     }
-  
+
     if (ParserPeek(par) == 'X' && ParserPeekForward(par, 1) == 'p')
     {
         return BVHParseChannelEnum(channel, par, "Xposition", CHANNEL_X_POSITION);
     }
-    
+
     if (ParserPeek(par) == 'Y' && ParserPeekForward(par, 1) == 'p')
     {
         return BVHParseChannelEnum(channel, par, "Yposition", CHANNEL_Y_POSITION);
     }
-    
+
     if (ParserPeek(par) == 'Z' && ParserPeekForward(par, 1) == 'p')
     {
         return BVHParseChannelEnum(channel, par, "Zposition", CHANNEL_Z_POSITION);
     }
-    
+
     if (ParserPeek(par) == 'X' && ParserPeekForward(par, 1) == 'r')
     {
         return BVHParseChannelEnum(channel, par, "Xrotation", CHANNEL_X_ROTATION);
     }
-    
+
     if (ParserPeek(par) == 'Y' && ParserPeekForward(par, 1) == 'r')
     {
         return BVHParseChannelEnum(channel, par, "Yrotation", CHANNEL_Y_ROTATION);
     }
-    
+
     if (ParserPeek(par) == 'Z' && ParserPeekForward(par, 1) == 'r')
     {
         return BVHParseChannelEnum(channel, par, "Zrotation", CHANNEL_Z_ROTATION);
     }
-    
+
     ParserError(par, "expected channel type");
     return false;
 }
@@ -758,14 +747,14 @@ static bool BVHParseJointChannels(BVHJointData* jnt, Parser* par)
 {
     if (!BVHParseString(par, "CHANNELS")) { return false; }
     if (!BVHParseInt(&jnt->channelCount, par)) { return false; }
-    
+
     for (int i = 0; i < jnt->channelCount; i++)
     {
-        if (!BVHParseChannel(&jnt->channels[i], par)) { return false; }      
+        if (!BVHParseChannel(&jnt->channels[i], par)) { return false; }
     }
-    
+
     if (!BVHParseNewline(par)) { return false; }
-    
+
     return true;
 }
 
@@ -775,7 +764,7 @@ static bool BVHParseJoints(BVHData* bvh, int parent, Parser* par)
     {
         int j = BVHDataAddJoint(bvh);
         bvh->joints[j].parent = parent;
-        
+
         if (ParserMatch(par, 'J'))
         {
             if (!BVHParseString(par, "JOINT")) { return false; }
@@ -792,7 +781,7 @@ static bool BVHParseJoints(BVHData* bvh, int parent, Parser* par)
         else if (ParserMatch(par, 'E'))
         {
             bvh->joints[j].endSite = true;
-            
+
             if (!BVHParseString(par, "End Site")) { return false; }
             BVHJointDataRename(&bvh->joints[j], "End Site");
             if (!BVHParseNewline(par)) { return false; }
@@ -803,7 +792,7 @@ static bool BVHParseJoints(BVHData* bvh, int parent, Parser* par)
             if (!BVHParseNewline(par)) { return false; }
         }
     }
-    
+
     return true;
 }
 
@@ -831,33 +820,33 @@ static bool BVHParseMotionData(BVHData* bvh, Parser* par)
     {
         channelCount += bvh->joints[i].channelCount;
     }
-    
+
     bvh->channelCount = channelCount;
     bvh->motionData = malloc(bvh->frameCount * channelCount * sizeof(float));
-    
+
     for (int i = 0; i < bvh->frameCount; i++)
     {
         for (int j = 0; j < channelCount; j++)
         {
             if (!BVHParseFloat(&bvh->motionData[i * channelCount + j], par)) { return false; }
         }
-        
+
         if (!BVHParseNewline(par)) { return false; }
     }
-    
+
     return true;
 }
 
 static bool BVHParse(BVHData* bvh, Parser* par)
-{  
+{
     // Hierarchy Data
-  
+
     if (!BVHParseString(par, "HIERARCHY")) { return false; }
     if (!BVHParseNewline(par)) { return false; }
-    
+
     int j = BVHDataAddJoint(bvh);
-    
-    if (!BVHParseString(par, "ROOT")) { return false; }    
+
+    if (!BVHParseString(par, "ROOT")) { return false; }
     if (!BVHParseJointName(&bvh->joints[j], par)) { return false; }
     if (!BVHParseNewline(par)) { return false; }
     if (!BVHParseString(par, "{")) { return false; }
@@ -875,22 +864,22 @@ static bool BVHParse(BVHData* bvh, Parser* par)
     if (!BVHParseFrames(bvh, par)) { return false; }
     if (!BVHParseFrameTime(bvh, par)) { return false; }
     if (!BVHParseMotionData(bvh, par)) { return false; }
-    
+
     return true;
 }
 
 static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int errMsgSize)
 {
     // Read file Contents
-  
+
     FILE* f = fopen(filename, "r");
-    
+
     if (f == NULL)
     {
         snprintf(errMsg, errMsgSize, "Error: Could not find file '%s'\n", filename);
         return false;
     }
-    
+
     fseek(f, 0, SEEK_END);
     long int length = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -898,22 +887,22 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
     fread(buffer, 1, length, f);
     buffer[length] = '\n';
     fclose(f);
-    
+
     // Create Parser
-    
+
     Parser par;
     ParserInit(&par, filename, buffer);
-    
+
     // Parse BVH
-    
+
     BVHDataFree(bvh);
     BVHDataInit(bvh);
     bool result = BVHParse(bvh, &par);
-    
+
     // Free contents and return result
-    
+
     free(buffer);
-    
+
     if (!result)
     {
         snprintf(errMsg, errMsgSize, "Error: Could not parse BVH file:\n    %s", par.err);
@@ -922,11 +911,11 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
     {
         errMsg[0] = '\0';
         printf("INFO: parsed '%s' successfully\n", filename);
-        
+
         // Compute some additional info
         BVHDataComputeJointNamesCombo(bvh);
     }
-    
+
     return result;
 }
 
@@ -943,7 +932,7 @@ typedef struct
     Quaternion* localRotations;
     Vector3* globalPositions;
     Quaternion* globalRotations;
-    
+
 } TransformData;
 
 static void TransformDataInit(TransformData* data)
@@ -966,7 +955,7 @@ static void TransformDataResize(TransformData* data, BVHData* bvh)
     data->localRotations = realloc(data->localRotations, data->jointCount * sizeof(Quaternion));
     data->globalPositions = realloc(data->globalPositions, data->jointCount * sizeof(Vector3));
     data->globalRotations = realloc(data->globalRotations, data->jointCount * sizeof(Quaternion));
-    
+
     for (int i = 0; i < data->jointCount; i++)
     {
         data->endSite[i] = bvh->joints[i].endSite;
@@ -987,44 +976,44 @@ static void TransformDataFree(TransformData* data)
 static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int frame, float scale)
 {
     frame = frame < 0 ? 0 : frame >= bvh->frameCount ? bvh->frameCount - 1 : frame;
-  
+
     int offset = 0;
     for (int i = 0; i < bvh->jointCount; i++)
     {
         Vector3 position = Vector3Scale(bvh->joints[i].offset, scale);
         Quaternion rotation = QuaternionIdentity();
-        
+
         for (int c = 0; c < bvh->joints[i].channelCount; c++)
         {
             switch (bvh->joints[i].channels[c])
             {
                 case CHANNEL_X_POSITION:
-                    position.x = scale * bvh->motionData[frame * bvh->channelCount + offset]; 
-                    offset++; 
+                    position.x = scale * bvh->motionData[frame * bvh->channelCount + offset];
+                    offset++;
                     break;
-                
+
                 case CHANNEL_Y_POSITION:
                     position.y = scale * bvh->motionData[frame * bvh->channelCount + offset];
                     offset++;
                     break;
-                
+
                 case CHANNEL_Z_POSITION:
-                    position.z = scale * bvh->motionData[frame * bvh->channelCount + offset]; 
+                    position.z = scale * bvh->motionData[frame * bvh->channelCount + offset];
                     offset++;
                     break;
-                
+
                 case CHANNEL_X_ROTATION:
                     rotation = QuaternionMultiply(rotation, QuaternionFromAxisAngle(
                         (Vector3){1, 0, 0}, deg2radf(bvh->motionData[frame * bvh->channelCount + offset])));
                     offset++;
                     break;
-                
+
                 case CHANNEL_Y_ROTATION:
                     rotation = QuaternionMultiply(rotation, QuaternionFromAxisAngle(
                         (Vector3){0, 1, 0}, deg2radf(bvh->motionData[frame * bvh->channelCount + offset])));
                     offset++;
                     break;
-                    
+
                 case CHANNEL_Z_ROTATION:
                     rotation = QuaternionMultiply(rotation, QuaternionFromAxisAngle(
                         (Vector3){0, 0, 1}, deg2radf(bvh->motionData[frame * bvh->channelCount + offset])));
@@ -1032,11 +1021,11 @@ static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int fram
                     break;
             }
         }
-        
+
         data->localPositions[i] = position;
         data->localRotations[i] = rotation;
     }
-    
+
     assert(offset == bvh->channelCount);
 }
 
@@ -1047,20 +1036,20 @@ static void TransformDataSampleFrameNearest(TransformData* data, BVHData* bvh, f
 }
 
 static void TransformDataSampleFrameLinear(
-    TransformData* data, 
-    TransformData* tmp0, 
-    TransformData* tmp1, 
-    BVHData* bvh, 
-    float time, 
+    TransformData* data,
+    TransformData* tmp0,
+    TransformData* tmp1,
+    BVHData* bvh,
+    float time,
     float scale)
 {
     const float alpha = fmod(time / bvh->frameTime, 1.0f);
     int frame0 = clamp((int)(time / bvh->frameTime) + 0, 0, bvh->frameCount - 1);
     int frame1 = clamp((int)(time / bvh->frameTime) + 1, 0, bvh->frameCount - 1);
-    
+
     TransformDataSampleFrame(tmp0, bvh, frame0, scale);
     TransformDataSampleFrame(tmp1, bvh, frame1, scale);
-  
+
     for (int i = 0; i < data->jointCount; i++)
     {
         data->localPositions[i] = Vector3Lerp(tmp0->localPositions[i], tmp1->localPositions[i], alpha);
@@ -1069,13 +1058,13 @@ static void TransformDataSampleFrameLinear(
 }
 
 static void TransformDataSampleFrameCubic(
-    TransformData* data, 
-    TransformData* tmp0, 
-    TransformData* tmp1, 
-    TransformData* tmp2, 
-    TransformData* tmp3, 
-    BVHData* bvh, 
-    float time, 
+    TransformData* data,
+    TransformData* tmp0,
+    TransformData* tmp1,
+    TransformData* tmp2,
+    TransformData* tmp3,
+    BVHData* bvh,
+    float time,
     float scale)
 {
     const float alpha = fmod(time / bvh->frameTime, 1.0f);
@@ -1083,20 +1072,20 @@ static void TransformDataSampleFrameCubic(
     int frame1 = clamp((int)(time / bvh->frameTime) + 0, 0, bvh->frameCount - 1);
     int frame2 = clamp((int)(time / bvh->frameTime) + 1, 0, bvh->frameCount - 1);
     int frame3 = clamp((int)(time / bvh->frameTime) + 2, 0, bvh->frameCount - 1);
-    
+
     TransformDataSampleFrame(tmp0, bvh, frame0, scale);
     TransformDataSampleFrame(tmp1, bvh, frame1, scale);
     TransformDataSampleFrame(tmp2, bvh, frame2, scale);
     TransformDataSampleFrame(tmp3, bvh, frame3, scale);
-  
+
     for (int i = 0; i < data->jointCount; i++)
     {
         data->localPositions[i] = Vector3InterpolateCubic(
-            tmp0->localPositions[i], tmp1->localPositions[i], 
+            tmp0->localPositions[i], tmp1->localPositions[i],
             tmp2->localPositions[i], tmp3->localPositions[i], alpha);
-            
+
         data->localRotations[i] = QuaternionInterpolateCubic(
-            tmp0->localRotations[i], tmp1->localRotations[i], 
+            tmp0->localRotations[i], tmp1->localRotations[i],
             tmp2->localRotations[i], tmp3->localRotations[i], alpha);
     }
 }
@@ -1105,9 +1094,9 @@ static void TransformDataForwardKinematics(TransformData* data)
 {
     for (int i = 0; i < data->jointCount; i++)
     {
-        int p = data->parents[i]; 
+        int p = data->parents[i];
         assert(p <= i);
-        
+
         if (p == -1)
         {
             data->globalPositions[i] = data->localPositions[i];
@@ -1115,7 +1104,7 @@ static void TransformDataForwardKinematics(TransformData* data)
         }
         else
         {
-            data->globalPositions[i] = Vector3Add(Vector3RotateByQuaternion(data->localPositions[i], data->globalRotations[p]), data->globalPositions[p]);  
+            data->globalPositions[i] = Vector3Add(Vector3RotateByQuaternion(data->localPositions[i], data->globalRotations[p]), data->globalPositions[p]);
             data->globalRotations[i] = QuaternionMultiply(data->globalRotations[p], data->localRotations[i]);
         }
     }
@@ -1127,29 +1116,29 @@ static void TransformDataForwardKinematics(TransformData* data)
 
 enum
 {
-    MAX_CHARACTERS = 6,
+    CHARACTERS_MAX = 6,
 };
 
 typedef struct {
-  
+
     int count;
     int active;
 
-    BVHData bvhData[MAX_CHARACTERS];
-    float scales[MAX_CHARACTERS];
-    char names[MAX_CHARACTERS][128];
-    float autoScales[MAX_CHARACTERS];
-    Color colors[MAX_CHARACTERS];
-    float opacities[MAX_CHARACTERS];
-    float radii[MAX_CHARACTERS];
-    char filePaths[MAX_CHARACTERS][512];
-    
-    TransformData xformData[MAX_CHARACTERS];
-    TransformData xformTmp0[MAX_CHARACTERS];
-    TransformData xformTmp1[MAX_CHARACTERS];
-    TransformData xformTmp2[MAX_CHARACTERS];
-    TransformData xformTmp3[MAX_CHARACTERS];
-  
+    BVHData bvhData[CHARACTERS_MAX];
+    float scales[CHARACTERS_MAX];
+    char names[CHARACTERS_MAX][128];
+    float autoScales[CHARACTERS_MAX];
+    Color colors[CHARACTERS_MAX];
+    float opacities[CHARACTERS_MAX];
+    float radii[CHARACTERS_MAX];
+    char filePaths[CHARACTERS_MAX][512];
+
+    TransformData xformData[CHARACTERS_MAX];
+    TransformData xformTmp0[CHARACTERS_MAX];
+    TransformData xformTmp1[CHARACTERS_MAX];
+    TransformData xformTmp2[CHARACTERS_MAX];
+    TransformData xformTmp3[CHARACTERS_MAX];
+
     bool colorPickerActive;
 
 } CharacterData;
@@ -1165,8 +1154,8 @@ static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
     data->colors[3] = ArgColor(argc, argv, "-color3", PURPLE);
     data->colors[4] = ArgColor(argc, argv, "-color4", MAGENTA);
     data->colors[5] = ArgColor(argc, argv, "-color5", GREEN);
-    
-    for (int i = 0; i < MAX_CHARACTERS; i++)
+
+    for (int i = 0; i < CHARACTERS_MAX; i++)
     {
         BVHDataInit(&data->bvhData[i]);
         data->scales[i] = 1.0f;
@@ -1179,9 +1168,9 @@ static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
         TransformDataInit(&data->xformTmp0[i]);
         TransformDataInit(&data->xformTmp1[i]);
         TransformDataInit(&data->xformTmp2[i]);
-        TransformDataInit(&data->xformTmp3[i]);    
+        TransformDataInit(&data->xformTmp3[i]);
     }
-    
+
     data->colorPickerActive = ArgBool(argc, argv, "colorPickerActive", false);
 }
 
@@ -1195,34 +1184,20 @@ static inline void CharacterDataFree(CharacterData* data)
         TransformDataFree(&data->xformTmp2[i]);
         TransformDataFree(&data->xformTmp3[i]);
         BVHDataFree(&data->bvhData[i]);
-    }  
-}
-
-static inline void UpdateWindowTitle(const char* path)
-{
-    if (path == NULL)
-    {
-        SetWindowTitle("BVHView");
-    }
-    else
-    {
-        char windowTitle[512];
-        snprintf(windowTitle, 512, "%s - BVHView", path);
-        SetWindowTitle(windowTitle);
     }
 }
 
 static bool CharacterDataLoadFromFile(
     CharacterData* data,
-    const char* path, 
+    const char* path,
     char* errMsg,
     int errMsgSize)
 {
     printf("INFO: Loading '%s'\n", path);
 
-    if (data->count == MAX_CHARACTERS)
+    if (data->count == CHARACTERS_MAX)
     {
-        snprintf(errMsg, 512, "Error: Maximum number of BVH files loaded (%i)", MAX_CHARACTERS);
+        snprintf(errMsg, 512, "Error: Maximum number of BVH files loaded (%i)", CHARACTERS_MAX);
         return false;
     }
 
@@ -1233,29 +1208,29 @@ static bool CharacterDataLoadFromFile(
         TransformDataResize(&data->xformTmp1[data->count], &data->bvhData[data->count]);
         TransformDataResize(&data->xformTmp2[data->count], &data->bvhData[data->count]);
         TransformDataResize(&data->xformTmp3[data->count], &data->bvhData[data->count]);
-      
+
         snprintf(data->filePaths[data->count], 512, "%s", path);
 
         const char* filename = path;
         while (strchr(filename, '/')) { filename = strchr(filename, '/') + 1; }
         while (strchr(filename, '\\')) { filename = strchr(filename, '\\') + 1; }
-        
+
         snprintf(data->names[data->count], 128, "%s", filename);
         data->scales[data->count] = 1.0f;
-        
+
         // Auto-Scaling and unit detection
-        
+
         if (data->bvhData[data->count].frameCount > 0)
         {
             TransformDataSampleFrame(&data->xformData[data->count], &data->bvhData[data->count], 0, 1.0f);
             TransformDataForwardKinematics(&data->xformData[data->count]);
-            
+
             float height = 1e-8f;
             for (int j = 0; j < data->xformData[data->count].jointCount; j++)
             {
                 height = maxf(height, data->xformData[data->count].globalPositions[j].y);
-            } 
-            
+            }
+
             data->scales[data->count] = height > 10.0f ? 0.01f : 1.0f;
             data->autoScales[data->count] = 1.8 / height;
         }
@@ -1263,9 +1238,9 @@ static bool CharacterDataLoadFromFile(
         {
             data->autoScales[data->count] = 1.0f;
         }
-        
+
         data->count++;
-        
+
         return true;
     }
     else
@@ -1281,230 +1256,224 @@ static bool CharacterDataLoadFromFile(
 
 static inline Vector3 CapsuleStart(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
-    return Vector3Add(capsulePosition, 
+    return Vector3Add(capsulePosition,
         Vector3RotateByQuaternion((Vector3){+capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
 }
 
 static inline Vector3 CapsuleEnd(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
-    return Vector3Add(capsulePosition, 
-        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)); 
+    return Vector3Add(capsulePosition,
+        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
 }
 
 static inline Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
-  
-    return Vector3Subtract(Vector3Add(capsulePosition, 
-        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)), capsuleStart);   
+
+    return Vector3Subtract(Vector3Add(capsulePosition,
+        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)), capsuleStart);
 }
 
-static inline Vector3 NearestPointOnLineSegment(
-    Vector3 lineStart, 
+static inline float NearestPointOnLineSegment(
+    Vector3 lineStart,
     Vector3 lineEnd,
     Vector3 point)
 {
     Vector3 ab = Vector3Subtract(lineEnd, lineStart);
     Vector3 ap = Vector3Subtract(point, lineStart);
     float lengthsq = Vector3LengthSqr(ab);
-    
-    if (lengthsq < 1e-8f)
-    {
-        return lineStart;
-    }
-    else
-    {
-        float t = clampf(Vector3DotProduct(ab, ap) / lengthsq, 0.0f, 1.0f);
-        return Vector3Add(lineStart, Vector3Scale(ab, t));
-    }
+
+    return lengthsq < 1e-8f ? 0.5f : saturatef(Vector3DotProduct(ab, ap) / lengthsq);
 }
 
 static inline void NearestPointBetweenLineSegments(
-    Vector3* nearestLine0, 
-    Vector3* nearestLine1, 
-    Vector3 line0Start, 
+    float* nearestTime0,
+    float* nearestTime1,
+    Vector3 line0Start,
     Vector3 line0End,
     Vector3 line1Start,
     Vector3 line1End)
 {
-    float d0 = Vector3LengthSqr(Vector3Subtract(line1Start, line0Start)); 
-    float d1 = Vector3LengthSqr(Vector3Subtract(line1End, line0Start)); 
-    float d2 = Vector3LengthSqr(Vector3Subtract(line1Start, line0End)); 
+    Vector3 line0Vec = Vector3Subtract(line0End, line0Start);
+    Vector3 line1Vec = Vector3Subtract(line1End, line1Start);
+    float d0 = Vector3LengthSqr(Vector3Subtract(line1Start, line0Start));
+    float d1 = Vector3LengthSqr(Vector3Subtract(line1End, line0Start));
+    float d2 = Vector3LengthSqr(Vector3Subtract(line1Start, line0End));
     float d3 = Vector3LengthSqr(Vector3Subtract(line1End, line0End));
 
-    if (d2 < d0 || d2 < d1 || d3 < d0 || d3 < d1)
-    {
-        *nearestLine0 = line0End;
-    }
-    else
-    {
-        *nearestLine0 = line0Start;
-    }
-    
-    *nearestLine1 = NearestPointOnLineSegment(line1Start, line1End, *nearestLine0);
-    *nearestLine0 = NearestPointOnLineSegment(line0Start, line0End, *nearestLine1);
+    *nearestTime0 = (d2 < d0 || d2 < d1 || d3 < d0 || d3 < d1) ? 1.0f : 0.0f;
+    *nearestTime1 = NearestPointOnLineSegment(line1Start, line1End, Vector3Add(line0Start, Vector3Scale(line0Vec, *nearestTime0)));
+    *nearestTime0 = NearestPointOnLineSegment(line0Start, line0End, Vector3Add(line1Start, Vector3Scale(line1Vec, *nearestTime1)));
 }
 
-static inline void NearestPointBetweenLineSegmentAndGroundPlane(
-    Vector3* nearestPointOnLine,
-    Vector3* nearestPointOnGroundPlane,
-    Vector3 lineStart, 
-    Vector3 lineEnd)
+static inline float NearestPointBetweenLineSegmentAndGroundPlane(Vector3 lineStart, Vector3 lineEnd)
 {
     Vector3 lineVector = Vector3Subtract(lineEnd, lineStart);
-    
-    if (fabs(lineVector.y) < 1e-8f)
-    {
-        *nearestPointOnLine = lineStart;
-        *nearestPointOnGroundPlane = (Vector3){ nearestPointOnLine->x, 0.0f, nearestPointOnLine->z };
-        return;
-    }
-    
-    float alpha = clampf((-lineStart.y) / lineVector.y, 0.0f, 1.0f);
-    
-    *nearestPointOnLine = Vector3Add(lineStart, Vector3Scale(lineVector, alpha));
-    *nearestPointOnGroundPlane = (Vector3){ nearestPointOnLine->x, 0.0f, nearestPointOnLine->z };
+    return fabs(lineVector.y) < 1e-8f ? 0.5f : saturatef((-lineStart.y) / lineVector.y);
 }
 
 static inline void NearestPointBetweenLineSegmentAndGroundSegment(
-    Vector3* nearestPointOnLine,
+    float* nearestTimeOnLine,
     Vector3* nearestPointOnGround,
-    Vector3 lineStart, 
+    Vector3 lineStart,
     Vector3 lineEnd,
     Vector3 groundMins,
     Vector3 groundMaxs)
 {
+    Vector3 lineVec = Vector3Subtract(lineEnd, lineStart);
+  
     // Check Against Plane
-  
-    NearestPointBetweenLineSegmentAndGroundPlane(
-        nearestPointOnLine, 
-        nearestPointOnGround,
-        lineStart,
-        lineEnd);
-        
+
+    *nearestTimeOnLine = NearestPointBetweenLineSegmentAndGroundPlane(lineStart, lineEnd);
+    *nearestPointOnGround = (Vector3){
+        lineStart.x + (*nearestTimeOnLine) * lineVec.x,
+        0.0f,
+        lineStart.z + (*nearestTimeOnLine) * lineVec.z,
+    };
+
     // If point is inside plane bounds it must be the nearest
-  
+
     if (nearestPointOnGround->x >= groundMins.x &&
         nearestPointOnGround->x <= groundMaxs.x &&
-        nearestPointOnGround->z <= groundMaxs.z &&
+        nearestPointOnGround->z >= groundMins.z &&
         nearestPointOnGround->z <= groundMaxs.z)
     {
         return;
     }
-    
+
     // Check against four edges
 
-    Vector3 nearestPointOnLine0, nearestPointOnLine1, nearestPointOnLine2, nearestPointOnLine3;
-    Vector3 nearestPointOnGround0, nearestPointOnGround1, nearestPointOnGround2, nearestPointOnGround3;
-    float distance0, distance1, distance2, distance3;
-  
-    NearestPointBetweenLineSegments(
-        &nearestPointOnLine0,
-        &nearestPointOnGround0,
-        lineStart, lineEnd,
-        (Vector3){ groundMins.x, 0.0f, groundMins.z },
-        (Vector3){ groundMins.x, 0.0f, groundMaxs.z });
-  
-    NearestPointBetweenLineSegments(
-        &nearestPointOnLine1,
-        &nearestPointOnGround1,
-        lineStart, lineEnd,
-        (Vector3){ groundMins.x, 0.0f, groundMaxs.z },
-        (Vector3){ groundMaxs.x, 0.0f, groundMaxs.z });
-  
-    NearestPointBetweenLineSegments(
-        &nearestPointOnLine2,
-        &nearestPointOnGround2,
-        lineStart, lineEnd,
-        (Vector3){ groundMaxs.x, 0.0f, groundMaxs.z },
-        (Vector3){ groundMaxs.x, 0.0f, groundMins.z });
-  
-    NearestPointBetweenLineSegments(
-        &nearestPointOnLine3,
-        &nearestPointOnGround3,
-        lineStart, lineEnd,
-        (Vector3){ groundMaxs.x, 0.0f, groundMins.z },
-        (Vector3){ groundMins.x, 0.0f, groundMins.z });
+    Vector3 edgeStart0 =  (Vector3){ groundMins.x, 0.0f, groundMins.z };
+    Vector3 edgeEnd0 = (Vector3){ groundMins.x, 0.0f, groundMaxs.z };
     
-    distance0 = Vector3Distance(nearestPointOnLine0, nearestPointOnGround0);
-    distance1 = Vector3Distance(nearestPointOnLine1, nearestPointOnGround1);
-    distance2 = Vector3Distance(nearestPointOnLine2, nearestPointOnGround2);
-    distance3 = Vector3Distance(nearestPointOnLine3, nearestPointOnGround3);
+    Vector3 edgeStart1 = (Vector3){ groundMins.x, 0.0f, groundMaxs.z };
+    Vector3 edgeEnd1 = (Vector3){ groundMaxs.x, 0.0f, groundMaxs.z };
     
+    Vector3 edgeStart2 = (Vector3){ groundMaxs.x, 0.0f, groundMaxs.z };
+    Vector3 edgeEnd2 = (Vector3){ groundMaxs.x, 0.0f, groundMins.z };
+    
+    Vector3 edgeStart3 = (Vector3){ groundMaxs.x, 0.0f, groundMins.z };
+    Vector3 edgeEnd3 = (Vector3){ groundMins.x, 0.0f, groundMins.z };
+
+    float nearestTimeOnLine0, nearestTimeOnLine1, nearestTimeOnLine2, nearestTimeOnLine3;
+    float nearestTimeOnEdge0, nearestTimeOnEdge1, nearestTimeOnEdge2, nearestTimeOnEdge3;
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine0,
+        &nearestTimeOnEdge0,
+        lineStart, lineEnd,
+        edgeStart0, edgeEnd0);
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine1,
+        &nearestTimeOnEdge1,
+        lineStart, lineEnd,
+        edgeStart1, edgeEnd1);
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine2,
+        &nearestTimeOnEdge2,
+        lineStart, lineEnd,
+        edgeStart2, edgeEnd2);
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine3,
+        &nearestTimeOnEdge3,
+        lineStart, lineEnd,
+        edgeStart3, edgeEnd3);
+
+    Vector3 nearestPointOnLine0 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine0));
+    Vector3 nearestPointOnLine1 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine1));
+    Vector3 nearestPointOnLine2 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine2));
+    Vector3 nearestPointOnLine3 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine3));
+    
+    Vector3 nearestPointOnEdge0 = Vector3Add(edgeStart0, Vector3Scale(Vector3Subtract(edgeEnd0, edgeStart0), nearestTimeOnEdge0));
+    Vector3 nearestPointOnEdge1 = Vector3Add(edgeStart1, Vector3Scale(Vector3Subtract(edgeEnd1, edgeStart1), nearestTimeOnEdge1));
+    Vector3 nearestPointOnEdge2 = Vector3Add(edgeStart2, Vector3Scale(Vector3Subtract(edgeEnd2, edgeStart2), nearestTimeOnEdge2));
+    Vector3 nearestPointOnEdge3 = Vector3Add(edgeStart3, Vector3Scale(Vector3Subtract(edgeEnd3, edgeStart3), nearestTimeOnEdge3));
+
+    float distance0 = Vector3Distance(nearestPointOnLine0, nearestPointOnEdge0);
+    float distance1 = Vector3Distance(nearestPointOnLine1, nearestPointOnEdge1);
+    float distance2 = Vector3Distance(nearestPointOnLine2, nearestPointOnEdge2);
+    float distance3 = Vector3Distance(nearestPointOnLine3, nearestPointOnEdge3);
+
     if (distance0 <= distance1 && distance0 <= distance2 && distance0 <= distance3)
     {
-        *nearestPointOnLine = nearestPointOnLine0;
-        *nearestPointOnGround = nearestPointOnGround0;
+        *nearestTimeOnLine = nearestTimeOnLine0;
+        *nearestPointOnGround = nearestPointOnEdge0;
         return;
     }
-    
+
     if (distance1 <= distance0 && distance1 <= distance2 && distance1 <= distance3)
     {
-        *nearestPointOnLine = nearestPointOnLine1;
-        *nearestPointOnGround = nearestPointOnGround1;
+        *nearestTimeOnLine = nearestTimeOnLine1;
+        *nearestPointOnGround = nearestPointOnEdge1;
         return;
     }
-    
+
     if (distance2 <= distance0 && distance2 <= distance1 && distance2 <= distance3)
     {
-        *nearestPointOnLine = nearestPointOnLine2;
-        *nearestPointOnGround = nearestPointOnGround2;
+        *nearestTimeOnLine = nearestTimeOnLine2;
+        *nearestPointOnGround = nearestPointOnEdge2;
         return;
     }
-    
+
     if (distance3 <= distance0 && distance3 <= distance1 && distance3 <= distance2)
     {
-        *nearestPointOnLine = nearestPointOnLine3;
-        *nearestPointOnGround = nearestPointOnGround3;
+        *nearestTimeOnLine = nearestTimeOnLine3;
+        *nearestPointOnGround = nearestPointOnEdge3;
         return;
     }
+}
+
+static inline float SphereOcclusionLookup(float nlAngle, float h, float maxRatio)
+{
+    float nl = cosf(nlAngle);
+    float h2 = h*h;
+
+    float res = maxf(0.0, nl) / h2;
+    float k2 = 1.0 - h2*nl*nl;
+    if (k2 > 1e-4f)
+    {
+        res = nl * acosf(-nl*sqrtf((h2 - 1.0f) / (1.0f - nl*nl))) - sqrtf(k2*(h2 - 1.0f));
+        res = (res / h2 + atanf(sqrt(k2 / (h2 - 1.0f)))) / PIf;
+    }
+
+    float decay = maxf(1.0f - (h - 1.0f) / (maxRatio - 1.0f), 0.0f);
+
+    return 1.0f - res * decay;
 }
 
 static inline float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float rad)
 {
     Vector3 di = Vector3Subtract(sph, pos);
-    float l = maxf(Vector3Length(di), rad);
-    float nl = Vector3DotProduct(nor, Vector3Normalize(di));
-    float h  = l / rad;
-    float h2 = h*h;
-    
-    float res;
-    float k2 = 1.0 - h2*nl*nl;
-    if (k2 > 0.001)                                                        
-    {                                                                      
-        res = nl * fast_acosf(-nl*sqrtf((h2 - 1.0f) / (1.0f - nl*nl))) - sqrtf(k2*(h2 - 1.0f));   
-        res = (res / h2 + fast_positive_atanf(sqrt(k2 / (h2 - 1.0f)))) / PIf; 
-    }                                                                      
-    else                                                                   
-    {                                                                      
-        res = maxf(0.0, nl) / h2;                                
-    }      
-
-    return 1.0f - clampf(res, 0.0f, 1.0f);
+    float l = Vector3Length(di);
+    float nlAngle = acosf(Vector3DotProduct(nor, Vector3Scale(di, 1.0f / l)));
+    float h  = l < rad ? 1.0 : l / rad;
+    return SphereOcclusionLookup(nlAngle, h, 4.0f);
 }
 
-static inline float CapsuleSphereIntersectionArea(
-    float cosCap1, float cosCap2,
-    float cap2, float cosCist)
+static inline float CapsuleSphereIntersectionArea(float r1, float r2, float d)
 {
-    float r1 = fast_positive_acosf(cosCap1);
-    float r2 = cap2;
-    float d  = fast_acosf(cosCist);
-
     if (minf(r1, r2) <= maxf(r1, r2) - d)
     {
-        return 1.0f - maxf(cosCap1, cosCap2);
+        return 1.0f - maxf(cosf(r1), cosf(r2));
     }
     else if (r1 + r2 <= d)
     {
-        return 0.0f; 
+        return 0.0f;
     }
 
     float delta = fabs(r1 - r2);
-    float x = 1.0f - clampf((d - delta) / maxf(r1 + r2 - delta, 0.0001f), 0.0f, 1.0f);
+    float x = 1.0f - saturatef((d - delta) / maxf(r1 + r2 - delta, 1e-8f));
     float area = squaref(x) * (-2.0f * x + 3.0f);
 
-    return area * (1.0f - maxf(cosCap1, cosCap2));
+    return area * (1.0f - maxf(cosf(r1), cosf(r2)));
+}
+
+static inline float SphereDirectionalOcclusionLookup(float phi, float theta, float coneAngle)
+{
+    return 1.0f - CapsuleSphereIntersectionArea(theta, coneAngle / 2.0f, phi) / (1.0f - cosf(coneAngle / 2.0f));
 }
 
 static inline float SphereDirectionalOcclusion(
@@ -1515,12 +1484,15 @@ static inline float SphereDirectionalOcclusion(
     float occluderLen2 = Vector3DotProduct(occluder, occluder);
     Vector3 occluderDir = Vector3Scale(occluder, 1.0f / maxf(sqrtf(occluderLen2), 1e-8f));
 
-    float cosPhi = Vector3DotProduct(occluderDir, Vector3Negate(coneDir));
-    float cosTheta = sqrtf(occluderLen2 / (squaref(radius) + occluderLen2));
-    float cosCone = cosf(coneAngle / 2.0f) / (1.0f - 1e-8f);
+    float phi = acosf(Vector3DotProduct(occluderDir, Vector3Negate(coneDir)));
+    float theta = acosf(sqrtf(occluderLen2 / (squaref(radius) + occluderLen2)));
+    
+    return SphereDirectionalOcclusionLookup(phi, theta, coneAngle);
+}
 
-    return 1.0f - CapsuleSphereIntersectionArea(
-        cosTheta, cosCone, coneAngle / 2.0f, cosPhi) / (1.0f - cosCone);
+static inline Vector3 CapsuleProjectOnLight(Vector3 capVec, Vector3 coneDir)
+{
+    return Vector3Subtract(Vector3Scale(Vector3Negate(coneDir), Vector3DotProduct(Vector3Negate(coneDir), capVec)), capVec);
 }
 
 static inline float CapsuleDirectionalOcclusion(
@@ -1529,59 +1501,10 @@ static inline float CapsuleDirectionalOcclusion(
 {
     Vector3 ba = capVec;
     Vector3 pa = Vector3Subtract(capStart, pos);
-    float a = Vector3DotProduct(Vector3Negate(coneDir), ba);
-    float t = clampf(
-        Vector3DotProduct(pa, Vector3Subtract(Vector3Scale(Vector3Negate(coneDir), a), ba)) / 
-        (Vector3DotProduct(ba, ba) - a * a), 
-        0.0f, 1.0f);
+    Vector3 cba = CapsuleProjectOnLight(ba, coneDir);
+    float t = saturatef(Vector3DotProduct(pa, cba) / (Vector3DotProduct(cba, cba)));
 
-    return SphereDirectionalOcclusion(
-        pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
-}
-
-static inline float CapsuleRayIntersect(
-    Vector3 capStart, Vector3 capVec, float capRadius,
-    Vector3 rayStart, Vector3 rayDir)
-{
-    Vector3 ba = capVec;
-    Vector3 oa = Vector3Subtract(rayStart, capStart);
-
-    float baba = Vector3DotProduct(ba, ba);
-    float bard = Vector3DotProduct(ba, rayDir);
-    float baoa = Vector3DotProduct(ba, oa);
-    float rdoa = Vector3DotProduct(rayDir, oa);
-    float oaoa = Vector3DotProduct(oa, oa);
-
-    float a = baba      - bard*bard;
-    float b = baba*rdoa - baoa*bard;
-    float c = baba*oaoa - baoa*baoa - capRadius*capRadius*baba;
-    float h = b*b - a*c;
-    
-    if (h >= 0.0)
-    {
-        float t = (-b - sqrtf(h))/a;
-        float y = baoa + t*bard;
-        
-        // body
-        if (y > 0.0 && y < baba)
-        {
-            return t > 1e-4 ? 0.0 : 1.0;
-        }
-        
-        // caps
-        Vector3 oc = y <= 0.0 ? oa : Vector3Subtract(rayStart, Vector3Add(capStart, capVec));
-        b = Vector3DotProduct(rayDir, oc);
-        c = Vector3DotProduct(oc, oc) - capRadius*capRadius;
-        h = b*b - c;
-        
-        if (h > 0.0)
-        {
-            t = -b - sqrtf(h);
-            return t > 1e-4 ? 0.0 : 1.0;
-        }
-    }
-    
-    return 1.0;
+    return SphereDirectionalOcclusion(pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
 }
 
 //--------------------------------------
@@ -1618,7 +1541,7 @@ typedef struct
     Vector3* capsuleColors;
     float* capsuleOpacities;
     CapsuleSort* capsuleSort;
-    
+
     int aoCapsuleCount;
     Vector3* aoCapsuleStarts;
     Vector3* aoCapsuleVectors;
@@ -1630,8 +1553,53 @@ typedef struct
     Vector3* shadowCapsuleVectors;
     float* shadowCapsuleRadii;
     CapsuleSort* shadowCapsuleSort;
+    
+    Image aoLookupImage;
+    Texture2D aoLookupTable;
+    Vector2 aoLookupResolution;
+
+    Image shadowLookupImage;
+    Texture2D shadowLookupTable;
+    Vector2 shadowLookupResolution;
 
 } CapsuleData;
+
+static void CapsuleDataUpdateAOLookupTable(CapsuleData* data)
+{
+    int width = (int)data->aoLookupResolution.x;
+    int height = (int)data->aoLookupResolution.y;
+    float maxRatio = 4.0f;
+
+    for (int y = 0; y < height; y++)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            float nlAngle = (((float)x) / (width - 1)) * PIf;
+            float h = 1.0f + (maxRatio - 1.0f) * (((float)y) / (height - 1));
+            ((unsigned char*)data->aoLookupImage.data)[y * width + x] = (unsigned char)clampf(255.0 * SphereOcclusionLookup(nlAngle, h, maxRatio), 0.0, 255.0);
+        }
+    }
+
+    UpdateTexture(data->aoLookupTable, data->aoLookupImage.data);
+}
+
+static void CapsuleDataUpdateShadowLookupTable(CapsuleData* data, float coneAngle)
+{
+    int width = (int)data->shadowLookupResolution.x;
+    int height = (int)data->shadowLookupResolution.y;
+
+    for (int y = 0; y < height; y++)
+    {
+        for (int x = 0; x < width; x++)
+        {
+            float phi = (((float)x) / (width - 1)) * PIf;
+            float theta = ((float)y) / (height - 1) * (PIf / 2.0f);
+            ((unsigned char*)data->shadowLookupImage.data)[y * width + x] = (unsigned char)clampf(255.0 * SphereDirectionalOcclusionLookup(phi, theta, coneAngle), 0.0, 255.0);
+        }
+    }
+    
+    UpdateTexture(data->shadowLookupTable, data->shadowLookupImage.data);
+}
 
 static void CapsuleDataInit(CapsuleData* data)
 {
@@ -1643,7 +1611,7 @@ static void CapsuleDataInit(CapsuleData* data)
     data->capsuleColors = NULL;
     data->capsuleOpacities = NULL;
     data->capsuleSort = NULL;
-    
+
     data->aoCapsuleCount = 0;
     data->aoCapsuleStarts = NULL;
     data->aoCapsuleVectors = NULL;
@@ -1655,11 +1623,44 @@ static void CapsuleDataInit(CapsuleData* data)
     data->shadowCapsuleVectors = NULL;
     data->shadowCapsuleRadii = NULL;
     data->shadowCapsuleSort = NULL;
+    
+    // Capsule AO Lookup Table
+    
+    data->aoLookupImage = (Image){
+        .data = calloc(32 * 32, 1),
+        .width = 32,
+        .height = 32,
+        .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE,
+        .mipmaps = 1
+    };
+    
+    data->aoLookupTable = LoadTextureFromImage(data->aoLookupImage);
+    data->aoLookupResolution = (Vector2){ (float)data->aoLookupImage.width, (float)data->aoLookupImage.height };
+    SetTextureWrap(data->aoLookupTable, TEXTURE_WRAP_CLAMP);
+    SetTextureFilter(data->aoLookupTable, TEXTURE_FILTER_BILINEAR);
+    
+    CapsuleDataUpdateAOLookupTable(data);
+    
+    // Capsule Shadow Lookup Table
+    
+    data->shadowLookupImage = (Image){
+        .data = calloc(256 * 128, 1),
+        .width = 256,
+        .height = 128,
+        .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE,
+        .mipmaps = 1
+    };
+    
+    data->shadowLookupTable = LoadTextureFromImage(data->shadowLookupImage);
+    data->shadowLookupResolution = (Vector2){ (float)data->shadowLookupImage.width, (float)data->shadowLookupImage.height };
+    SetTextureWrap(data->shadowLookupTable, TEXTURE_WRAP_CLAMP);
+    SetTextureFilter(data->shadowLookupTable, TEXTURE_FILTER_BILINEAR);
+    
+    CapsuleDataUpdateShadowLookupTable(data, 0.2f);
 }
 
 static void CapsuleDataResize(CapsuleData* data, int maxCapsuleCount)
 {
-    data->capsuleCount = 0;
     data->capsulePositions = realloc(data->capsulePositions, maxCapsuleCount * sizeof(Vector3));
     data->capsuleRotations = realloc(data->capsuleRotations, maxCapsuleCount * sizeof(Quaternion));
     data->capsuleRadii = realloc(data->capsuleRadii, maxCapsuleCount * sizeof(float));
@@ -1668,13 +1669,11 @@ static void CapsuleDataResize(CapsuleData* data, int maxCapsuleCount)
     data->capsuleOpacities = realloc(data->capsuleOpacities, maxCapsuleCount * sizeof(float));
     data->capsuleSort = realloc(data->capsuleSort, maxCapsuleCount * sizeof(CapsuleSort));
 
-    data->aoCapsuleCount = 0;
     data->aoCapsuleStarts = realloc(data->aoCapsuleStarts, maxCapsuleCount * sizeof(Vector3));
     data->aoCapsuleVectors = realloc(data->aoCapsuleVectors, maxCapsuleCount * sizeof(Vector3));
     data->aoCapsuleRadii = realloc(data->aoCapsuleRadii, maxCapsuleCount * sizeof(float));
     data->aoCapsuleSort = realloc(data->aoCapsuleSort, maxCapsuleCount * sizeof(CapsuleSort));
 
-    data->shadowCapsuleCount = 0;
     data->shadowCapsuleStarts = realloc(data->shadowCapsuleStarts, maxCapsuleCount * sizeof(Vector3));
     data->shadowCapsuleVectors = realloc(data->shadowCapsuleVectors, maxCapsuleCount * sizeof(Vector3));
     data->shadowCapsuleRadii = realloc(data->shadowCapsuleRadii, maxCapsuleCount * sizeof(float));
@@ -1690,16 +1689,21 @@ static void CapsuleDataFree(CapsuleData* data)
     free(data->capsuleColors);
     free(data->capsuleOpacities);
     free(data->capsuleSort);
-    
+
     free(data->aoCapsuleStarts);
     free(data->aoCapsuleVectors);
     free(data->aoCapsuleRadii);
     free(data->aoCapsuleSort);
-    
+
     free(data->shadowCapsuleStarts);
     free(data->shadowCapsuleVectors);
     free(data->shadowCapsuleRadii);
     free(data->shadowCapsuleSort);
+    
+    UnloadImage(data->aoLookupImage);
+    UnloadTexture(data->aoLookupTable);
+    UnloadImage(data->shadowLookupImage);
+    UnloadTexture(data->shadowLookupTable);
 }
 
 static void CapsuleDataReset(CapsuleData* data)
@@ -1716,23 +1720,23 @@ static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData*
         int p = xforms->parents[i];
         if (p == -1) { continue; }
         if (ignoreEndSite && xforms->endSite[i]) { continue; }
-        
+
         float capsuleHalfLength = Vector3Length(xforms->localPositions[i]) / 2.0f;
         float capsuleRadius = minf(maxCapsuleRadius, capsuleHalfLength) + (i % 2) * 0.001f;
 
         if (capsuleRadius < 0.001f) { continue; }
-        
+
         Vector3 capsulePosition = Vector3Scale(Vector3Add(xforms->globalPositions[i], xforms->globalPositions[p]), 0.5f);
         Quaternion capsuleRotation = QuaternionMultiply(
-            xforms->globalRotations[p], 
+            xforms->globalRotations[p],
             QuaternionBetween((Vector3){ 1.0f, 0.0f, 0.0f }, Vector3Normalize(xforms->localPositions[i])));
-        
+
         data->capsulePositions[data->capsuleCount] = capsulePosition;
         data->capsuleRotations[data->capsuleCount] = capsuleRotation;
         data->capsuleHalfLengths[data->capsuleCount] = capsuleHalfLength;
         data->capsuleRadii[data->capsuleCount] = capsuleRadius;
-        data->capsuleColors[data->capsuleCount] = (Vector3){ color.r / 255.0f, color.g / 255.0f, color.b / 255.0f }; 
-        data->capsuleOpacities[data->capsuleCount] = opacity; 
+        data->capsuleColors[data->capsuleCount] = (Vector3){ color.r / 255.0f, color.g / 255.0f, color.b / 255.0f };
+        data->capsuleOpacities[data->capsuleCount] = opacity;
         data->capsuleCount++;
     }
 }
@@ -1740,34 +1744,38 @@ static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData*
 static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition)
 {
     data->aoCapsuleCount = 0;
-  
+
     for (int i = 0; i < data->capsuleCount; i++)
-    {      
+    {
         Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
+        Vector3 capsuleVector = CapsuleVector(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         float capsuleRadius = data->capsuleRadii[i];
-        
-        Vector3 capsulePoint, groundPoint;
+
+        float capsuleTime;
+        Vector3 groundPoint;
         NearestPointBetweenLineSegmentAndGroundSegment(
-            &capsulePoint,
+            &capsuleTime,
             &groundPoint,
             capsuleStart,
             capsuleEnd,
             (Vector3){ groundSegmentPosition.x - 1.0f, 0.0f, groundSegmentPosition.z - 1.0f },
             (Vector3){ groundSegmentPosition.x + 1.0f, 0.0f, groundSegmentPosition.z + 1.0f });
-            
+
+        Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
+
         float capsuleOcclusion = Vector3Distance(groundPoint, capsulePoint) < capsuleRadius ? 0.0f :
             SphereOcclusion(groundPoint, (Vector3){ 0.0f, 1.0f, 0.0f }, capsulePoint, capsuleRadius);
-        
+
         if (capsuleOcclusion < 0.99f)
         {
             data->aoCapsuleSort[data->aoCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->aoCapsuleCount++;
         }
     }
-    
+
     qsort(data->aoCapsuleSort, data->aoCapsuleCount, sizeof(CapsuleSort), CapsuleSortCompareGreater);
-    
+
     for (int i = 0; i < data->aoCapsuleCount; i++)
     {
         int j = data->aoCapsuleSort[i].index;
@@ -1781,42 +1789,47 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
 {
     Vector3 queryCapsuleStart = CapsuleStart(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
     Vector3 queryCapsuleEnd = CapsuleEnd(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
+    Vector3 queryCapsuleVector = CapsuleVector(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
     float queryCapsuleRadius = data->capsuleRadii[capsuleIndex];
-    
+
     data->aoCapsuleCount = 0;
-  
+
     for (int i = 0; i < data->capsuleCount; i++)
     {
         if (i == capsuleIndex) { continue; }
-        
+
         Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
+        Vector3 capsuleVector = CapsuleVector(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         float capsuleRadius = data->capsuleRadii[i];
         
-        Vector3 capsulePoint, queryPoint;
+        float capsuleTime, queryTime;
         NearestPointBetweenLineSegments(
-            &capsulePoint,
-            &queryPoint,
+            &capsuleTime,
+            &queryTime,
             capsuleStart,
             capsuleEnd,
             queryCapsuleStart,
             queryCapsuleEnd);
-        
+
+        Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
+        Vector3 queryPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, queryTime));
+
         Vector3 surfaceNormal = Vector3Normalize(Vector3Subtract(capsulePoint, queryPoint));
         Vector3 surfacePoint = Vector3Add(queryPoint, Vector3Scale(surfaceNormal, queryCapsuleRadius));
         
-        float capsuleOcclusion = Vector3Distance(capsulePoint, capsulePoint) <= queryCapsuleRadius + capsuleRadius ? 0.0f :
+        float capsuleOcclusion = Vector3Distance(queryPoint, capsulePoint) <= queryCapsuleRadius + capsuleRadius ? 0.0f :
             SphereOcclusion(surfacePoint, surfaceNormal, capsulePoint, capsuleRadius);
-        
-        if (capsuleOcclusion < 0.99f)
+
+        if (capsuleOcclusion < 0.95f)
         {
             data->aoCapsuleSort[data->aoCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->aoCapsuleCount++;
         }
     }
-    
+
     qsort(data->aoCapsuleSort, data->aoCapsuleCount, sizeof(CapsuleSort), CapsuleSortCompareGreater);
-    
+
     for (int i = 0; i < data->aoCapsuleCount; i++)
     {
         int j = data->aoCapsuleSort[i].index;
@@ -1826,45 +1839,43 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
     }
 }
 
-static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition, Vector3 lightDir, float lightConeAngle, int shadowMode)
+static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition, Vector3 lightDir, float lightConeAngle)
 {
+    Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
+
     data->shadowCapsuleCount = 0;
-  
+
     for (int i = 0; i < data->capsuleCount; i++)
-    {      
-        Vector3 capsulePosition = data->capsulePositions[i];
+    {
         Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleVector = Vector3Subtract(capsuleEnd, capsuleStart);
+        Vector3 capsuleVector = CapsuleVector(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         float capsuleRadius = data->capsuleRadii[i];
+
+        float startRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleStart, Vector3Add(capsuleStart, lightRay));
+        float endRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleEnd, Vector3Add(capsuleEnd, lightRay));
+
+        Vector3 groundCapsuleStart = Vector3Add(capsuleStart, Vector3Scale(lightRay, startRayTime));
+        Vector3 groundCapsuleEnd = Vector3Add(capsuleEnd, Vector3Scale(lightRay, endRayTime));
         
-        Vector3 rayPoint, groundPlanePoint;
-        NearestPointBetweenLineSegmentAndGroundPlane(
-            &rayPoint, 
-            &groundPlanePoint,
-            capsulePosition,
-            Vector3Add(capsulePosition, Vector3Scale(lightDir, 10.0f)));
+        groundCapsuleStart.x = clampf(groundCapsuleStart.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
+        groundCapsuleStart.z = clampf(groundCapsuleStart.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
+        groundCapsuleEnd.x = clampf(groundCapsuleEnd.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
+        groundCapsuleEnd.z = clampf(groundCapsuleEnd.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
         
-        Vector3 groundPoint =
-        {
-            clampf(groundPlanePoint.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f),
-            0.0f,
-            clampf(groundPlanePoint.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f),
-        };
-        
-        float capsuleOcclusion = shadowMode == 2 ? 
-                CapsuleDirectionalOcclusion(groundPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle) :
-                CapsuleRayIntersect(capsuleStart, capsuleVector, capsuleRadius, groundPoint, Vector3Negate(lightDir));
-        
-        if (capsuleOcclusion < 0.99f)
+        float capsuleOcclusion = minf(
+            CapsuleDirectionalOcclusion(groundCapsuleStart, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle),
+            CapsuleDirectionalOcclusion(groundCapsuleEnd, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle));
+
+        if (capsuleOcclusion < 0.95f)
         {
             data->shadowCapsuleSort[data->shadowCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->shadowCapsuleCount++;
         }
     }
-    
+
     qsort(data->shadowCapsuleSort, data->shadowCapsuleCount, sizeof(CapsuleSort), CapsuleSortCompareGreater);
-    
+
     for (int i = 0; i < data->shadowCapsuleCount; i++)
     {
         int j = data->shadowCapsuleSort[i].index;
@@ -1874,52 +1885,71 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
     }
 }
 
-static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int capsuleIndex, Vector3 lightDir, float lightConeAngle, int shadowMode)
+static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int capsuleIndex, Vector3 lightDir, float lightConeAngle)
 {
+    Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
+
     Vector3 queryCapsuleStart = CapsuleStart(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
     Vector3 queryCapsuleEnd = CapsuleEnd(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
+    Vector3 queryCapsuleVector = CapsuleVector(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
     float queryCapsuleRadius = data->capsuleRadii[capsuleIndex];
-  
+
     data->shadowCapsuleCount = 0;
-  
+
     for (int i = 0; i < data->capsuleCount; i++)
-    {      
+    {
         if (i == capsuleIndex) { continue; }
         
-        Vector3 capsulePosition = data->capsulePositions[i];
+        // This isn't 100% accurate but it will do for now...
+        
         Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
         Vector3 capsuleVector = Vector3Subtract(capsuleEnd, capsuleStart);
         float capsuleRadius = data->capsuleRadii[i];
         
-        // TODO: This isn't right but it will do for now.
-        Vector3 rayPoint, queryPoint;
+        float startRayTime, startRayQueryTime;
         NearestPointBetweenLineSegments(
-            &rayPoint,
-            &queryPoint,
-            capsulePosition,
-            Vector3Add(capsulePosition, Vector3Scale(lightDir, 10.0f)),
+            &startRayTime,
+            &startRayQueryTime,
+            capsuleStart,
+            Vector3Add(capsuleStart, lightRay),
             queryCapsuleStart,
             queryCapsuleEnd);
+
+        float endRayTime, endRayQueryTime;
+        NearestPointBetweenLineSegments(
+            &endRayTime,
+            &endRayQueryTime,
+            capsuleEnd,
+            Vector3Add(capsuleEnd, lightRay),
+            queryCapsuleStart,
+            queryCapsuleEnd);
+
+        Vector3 rayStartPoint = Vector3Add(capsuleStart, Vector3Scale(lightRay, startRayTime));
+        Vector3 rayEndPoint = Vector3Add(capsuleEnd, Vector3Scale(lightRay, endRayTime));
+
+        Vector3 queryStartPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, startRayQueryTime));
+        Vector3 queryEndPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, endRayQueryTime));
         
-        Vector3 surfaceNormal = Vector3Normalize(Vector3Subtract(rayPoint, queryPoint));
-        Vector3 surfacePoint = Vector3Add(queryPoint, Vector3Scale(surfaceNormal, queryCapsuleRadius));
+        Vector3 surfaceStartNormal = Vector3Normalize(Vector3Subtract(rayStartPoint, queryStartPoint));
+        Vector3 surfaceStartPoint = Vector3Add(queryStartPoint, Vector3Scale(surfaceStartNormal, queryCapsuleRadius));
+
+        Vector3 surfaceEndNormal = Vector3Normalize(Vector3Subtract(rayEndPoint, queryEndPoint));
+        Vector3 surfaceEndPoint = Vector3Add(queryEndPoint, Vector3Scale(surfaceEndNormal, queryCapsuleRadius));
+
+        float capsuleOcclusion = minf(
+            CapsuleDirectionalOcclusion(surfaceStartPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle),
+            CapsuleDirectionalOcclusion(surfaceEndPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle));
         
-        float capsuleOcclusion = 
-            Vector3Distance(surfacePoint, capsulePosition) <= capsuleRadius ? 0.0f : 
-            shadowMode == 2 ? 
-                CapsuleDirectionalOcclusion(surfacePoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle) :
-                CapsuleRayIntersect(capsuleStart, capsuleVector, capsuleRadius, surfacePoint, Vector3Negate(lightDir));
-        
-        if (capsuleOcclusion < 0.99f)
+        if (capsuleOcclusion < 0.95f)
         {
             data->shadowCapsuleSort[data->shadowCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->shadowCapsuleCount++;
         }
     }
-    
+
     qsort(data->shadowCapsuleSort, data->shadowCapsuleCount, sizeof(CapsuleSort), CapsuleSortCompareGreater);
-    
+
     for (int i = 0; i < data->shadowCapsuleCount; i++)
     {
         int j = data->shadowCapsuleSort[i].index;
@@ -1936,7 +1966,7 @@ static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, Char
     {
         totalJointCount += characterData->bvhData[i].jointCount;
     }
-    
+
     CapsuleDataResize(capsuleData, totalJointCount);
 }
 
@@ -1946,480 +1976,358 @@ static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, Char
 
 enum
 {
-    AO_CAPSULES_MAX = 32,
+    AO_CAPSULES_MAX = 16,
     SHADOW_CAPSULES_MAX = 32,
 };
 
 #define GLSL(X) \
   "#version 300 es\n" \
-  "#define AO_CAPSULES_MAX 32\n" \
+  "#define AO_CAPSULES_MAX 16\n" \
   "#define SHADOW_CAPSULES_MAX 32\n" \
   "#define PI 3.14159265359\n" \
   #X
 
 static const char* shaderVS = GLSL(
-                         
-precision highp float;                                                     
-precision mediump int;                                                     
-                                                                           
-in vec3 vertexPosition;                                                    
-in vec2 vertexTexCoord;                                                    
-in vec3 vertexNormal;                                                      
-                                                                           
-uniform int isCapsule;                                                     
-uniform vec3 capsulePosition;                                              
-uniform vec4 capsuleRotation;                                              
-uniform float capsuleHalfLength;                                           
-uniform float capsuleRadius;                                               
-                                                                           
-uniform mat4 matModel;                                                     
-uniform mat4 matNormal;                                                    
-uniform mat4 matView;                                                      
-uniform mat4 matProjection;                                                
-                                                                           
-out vec3 fragPosition;                                                     
-out vec2 fragTexCoord;                                                     
-out vec3 fragNormal;                                                       
-                                                                           
-vec3 rotate(in vec4 q, vec3 v)                                             
-{                                                                          
-    vec3 t = 2.0 * cross(q.xyz, v);                                        
-    return v + q.w * t + cross(q.xyz, t);                                  
-}                                                                          
-                                                                           
-vec3 CapsuleStretch(vec3 pos, float hlength, float radius)                
-{                                                                          
-    vec3 scaled = pos * radius;                                            
-    scaled.x = scaled.x > 0.0 ? scaled.x + hlength : scaled.x - hlength;   
-    return scaled;                                                         
-}                                                                          
-                                                                           
-void main()                                                                
-{                                                                          
-    fragTexCoord = vertexTexCoord;                                           
-                                                                             
-    if (isCapsule == 1)                                                    
-    {                                                                      
-        fragPosition = rotate(capsuleRotation,                             
-            CapsuleStretch(vertexPosition,                                
-            capsuleHalfLength, capsuleRadius)) + capsulePosition;          
-                                                                           
-        fragNormal = rotate(capsuleRotation, vertexNormal);                
-    }                                                                      
-    else                                                                   
-    {                                                                      
-        fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));         
-        fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 1.0))); 
-    }                                                                      
-                                                                           
-    gl_Position = matProjection * matView * vec4(fragPosition, 1.0);       
-}                                          
-                                
+
+precision highp float;
+precision mediump int;
+
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+
+uniform int isCapsule;
+uniform vec3 capsulePosition;
+uniform vec4 capsuleRotation;
+uniform float capsuleHalfLength;
+uniform float capsuleRadius;
+
+uniform mat4 matModel;
+uniform mat4 matNormal;
+uniform mat4 matView;
+uniform mat4 matProjection;
+
+out vec3 fragPosition;
+out vec2 fragTexCoord;
+out vec3 fragNormal;
+
+vec3 rotate(in vec4 q, vec3 v)
+{
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+vec3 CapsuleStretch(vec3 pos, float hlength, float radius)
+{
+    vec3 scaled = pos * radius;
+    scaled.x = scaled.x > 0.0 ? scaled.x + hlength : scaled.x - hlength;
+    return scaled;
+}
+
+void main()
+{
+    fragTexCoord = vertexTexCoord;
+
+    if (isCapsule == 1)
+    {
+        fragPosition = rotate(capsuleRotation,
+            CapsuleStretch(vertexPosition,
+            capsuleHalfLength, capsuleRadius)) + capsulePosition;
+
+        fragNormal = rotate(capsuleRotation, vertexNormal);
+    }
+    else
+    {
+        fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
+        fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 1.0)));
+    }
+
+    gl_Position = matProjection * matView * vec4(fragPosition, 1.0);
+}
+
 );
 
 static const char* shaderFS = GLSL(
+precision highp float;
+precision mediump int;
 
-precision highp float;                                                     
-precision mediump int;                                                     
-                                                                                                                                                      
-in vec3 fragPosition;                                                      
-in vec2 fragTexCoord;                                                      
-in vec3 fragNormal;                                                        
-                                                                           
-uniform vec3 objectColor;                                                  
-uniform float objectSpecularity;                                           
-uniform float objectGlossiness;                                            
-uniform float objectOpacity;                                            
-                                                                           
-uniform int isCapsule;                                                     
-uniform vec3 capsulePosition;                                              
-uniform vec4 capsuleRotation;                                              
-uniform float capsuleHalfLength;                                           
-uniform float capsuleRadius;                                               
-uniform vec3 capsuleStart;                                                 
-uniform vec3 capsuleVector;                                                
-                                                                           
-uniform int shadowCapsuleCount;                                              
-uniform vec3 shadowCapsuleStarts[SHADOW_CAPSULES_MAX];                      
-uniform vec3 shadowCapsuleVectors[SHADOW_CAPSULES_MAX];                     
-uniform float shadowCapsuleRadii[SHADOW_CAPSULES_MAX];                      
-                                                                           
-uniform int aoCapsuleCount;                                                  
-uniform vec3 aoCapsuleStarts[AO_CAPSULES_MAX];                              
-uniform vec3 aoCapsuleVectors[AO_CAPSULES_MAX];                             
-uniform float aoCapsuleRadii[AO_CAPSULES_MAX];                              
-                                                                           
-uniform vec3 cameraPosition;                                               
-                                                                           
-uniform float sunStrength;                                                 
-uniform float sunConeAngle;                                                
-uniform vec3 sunDir;                                                       
-uniform vec3 sunColor;                                                     
-uniform float skyStrength;                                                 
-uniform vec3 skyColor;                                                     
-uniform float ambientStrength;                                             
-uniform float groundStrength;                                              
-uniform float exposure;                                                    
-uniform int shadowMode;
+in vec3 fragPosition;
+in vec2 fragTexCoord;
+in vec3 fragNormal;
 
-out vec4 finalColor;                                                       
-                                                                           
-float saturate(in float x)                                                 
-{                                                                          
-    return clamp(x, 0.0, 1.0);                                             
-}                                                                          
-                                                                           
-float square(in float x)                                                   
-{                                                                          
-    return x * x;                                                          
-}                                                                          
-                                                                           
-float fast_acos(in float x)                                                
-{                                                                          
-    float y = abs(x);                                                      
-    float p = -0.1565827 * y + 1.570796;                                   
-    p *= sqrt(max(1.0 - y, 0.0));                                                    
-    return x >= 0.0 ? p : PI - p;                                          
-}                                                                          
-                                                                           
-float fast_positive_acos(in float x)                                       
-{                                                                          
-    float p = -0.1565827 * x + 1.570796;                                   
-    return p * sqrt(max(1.0 - x, 0.0));                                              
-}                                                                                                                                             
-                                                                           
-float fast_positive_atan(in float x)                                       
-{                                                                          
-    float w = x > 1.0 ? 1.0 / x : x;                                       
-    float y = (PI / 4.0)*w - w*(w - 1.0)*(0.2447 + 0.0663*w);              
-    return abs(x > 1.0 ? PI / 2.0 - y : y);                                
-}                                                                          
-                                                                           
-float SphereOcclusion(in vec3 pos, in vec3 nor, in vec3 sph, in float rad)
-{                                                                          
-    vec3 di = sph - pos;                                                  
-    float l = max(length(di), rad);
-    float nl = dot(nor, normalize(di));                                           
-    float h  = l / rad;                                                    
-    float h2 = h*h;                                                        
-    
-    float res;                                                             
-    float k2 = 1.0 - h2*nl*nl;                                             
-    if (k2 > 0.001)                                                        
-    {                                                                      
-        res = nl * fast_acos(-nl*sqrt((h2 - 1.0) / (1.0 - nl*nl))) - sqrt(k2*(h2 - 1.0));   
-        res = (res / h2 + fast_positive_atan(sqrt(k2 / (h2 - 1.0)))) / PI; 
-    }                                                                      
-    else                                                                   
-    {                                                                      
-        res = max(0.0, nl) / h2;                                
-    }                                                                      
-                                                                           
-    return 1.0 - saturate(res);                                            
-}                                                                          
-                                                                           
-float CapsuleOcclusion(                                                   
-    in vec3 pos, in vec3 nor,                                              
-    in vec3 capStart, in vec3 capVec, in float radius)                   
-{                                                                          
-    vec3 ba = capVec;                                                     
-    vec3 pa = pos - capStart;                 
-    float t = saturate(dot(pa, ba) / dot(ba, ba));                          
-    
-    return SphereOcclusion(pos, nor, capStart + t * ba, radius);         
-}                                                                          
-                                                                           
-float CapsuleSphereIntersectionArea(                                         
-    in float cosCap1, in float cosCap2,                                  
-    in float cap2, in float cosDist)                                      
-{                                                                          
-    float r1 = fast_positive_acos(cosCap1);                               
-    float r2 = cap2;                                                       
-    float d  = fast_acos(cosDist);                                        
-                                                                           
-    if (min(r1, r2) <= max(r1, r2) - d)                                    
-    {                                                                      
-        return 1.0 - max(cosCap1, cosCap2);                              
-    }                                                                      
-    else if (r1 + r2 <= d)                                                 
-    {                                                                      
-        return 0.0;                                                        
-    }                                                                      
-                                                                           
-    float delta = abs(r1 - r2);                                            
-    float x = 1.0 - saturate((d - delta) / max(r1 + r2 - delta, 0.0001));  
-    float area = square(x) * (-2.0 * x + 3.0);                             
-                                                                           
-    return area * (1.0 - max(cosCap1, cosCap2));                         
-}                                                                          
-                                                                           
-float SphereDirectionalOcclusion(                                        
-    in vec3 pos, in vec3 sphere, in float radius,                          
-    in vec3 coneDir, in float coneAngle)                                 
-{                                                                          
-    vec3 occluder = sphere - pos;                                          
-    float occluder_len2 = dot(occluder, occluder);                         
-    vec3 occluder_dir = occluder * inversesqrt(occluder_len2);             
-                                                                           
-    float cos_phi = dot(occluder_dir, -coneDir);                          
-    float cos_theta = sqrt(occluder_len2 /                                 
-        (square(radius) + occluder_len2));                                 
-    float cos_cone = cos(coneAngle / 2.0) / (1.0 - 1e-8);                                
-                                                                           
-    return 1.0 - CapsuleSphereIntersectionArea(                              
-        cos_theta, cos_cone, coneAngle / 2.0, cos_phi) / (1.0 - cos_cone);
-}                                                                          
-                                                                           
-float CapsuleDirectionalOcclusion(                                       
-    in vec3 pos, in vec3 capStart, in vec3 capVec,                       
-    in float capRadius, in vec3 coneDir, in float coneAngle)            
-{                                                                          
-    vec3 ba = capVec;                                                     
-    vec3 pa = capStart - pos;                                             
-    float a = dot(-coneDir, ba);                                          
-    float t = saturate(                                                    
-        dot(pa, a * -coneDir - ba) / (dot(ba, ba) - a * a));              
-        
-    return SphereDirectionalOcclusion(                                   
-        pos, capStart + t * ba, capRadius, coneDir, coneAngle);        
-}                                                                          
+uniform vec3 objectColor;
+uniform float objectSpecularity;
+uniform float objectGlossiness;
+uniform float objectOpacity;
 
-float CapsuleRayIntersect(
-    in vec3 capStart, in vec3 capVec, in float capRadius,
-    in vec3 rayStart, in vec3 rayDir)
+uniform int isCapsule;
+uniform vec3 capsulePosition;
+uniform vec4 capsuleRotation;
+uniform float capsuleHalfLength;
+uniform float capsuleRadius;
+uniform vec3 capsuleStart;
+uniform vec3 capsuleVector;
+
+uniform int shadowCapsuleCount;
+uniform vec3 shadowCapsuleStarts[SHADOW_CAPSULES_MAX];
+uniform vec3 shadowCapsuleVectors[SHADOW_CAPSULES_MAX];
+uniform float shadowCapsuleRadii[SHADOW_CAPSULES_MAX];
+uniform sampler2D shadowLookupTable;
+uniform vec2 shadowLookupResolution;
+
+uniform int aoCapsuleCount;
+uniform vec3 aoCapsuleStarts[AO_CAPSULES_MAX];
+uniform vec3 aoCapsuleVectors[AO_CAPSULES_MAX];
+uniform float aoCapsuleRadii[AO_CAPSULES_MAX];
+uniform sampler2D aoLookupTable;
+uniform vec2 aoLookupResolution;
+
+uniform vec3 cameraPosition;
+
+uniform float sunStrength;
+uniform vec3 sunDir;
+uniform vec3 sunColor;
+uniform float skyStrength;
+uniform vec3 skyColor;
+uniform float ambientStrength;
+uniform float groundStrength;
+uniform float exposure;
+
+out vec4 finalColor;
+
+float saturate(in float x)
 {
-    vec3 ba = capVec;
-    vec3 oa = rayStart - capStart;
-
-    float baba = dot(ba, ba);
-    float bard = dot(ba, rayDir);
-    float baoa = dot(ba, oa);
-    float rdoa = dot(rayDir, oa);
-    float oaoa = dot(oa, oa);
-
-    float a = baba      - bard*bard;
-    float b = baba*rdoa - baoa*bard;
-    float c = baba*oaoa - baoa*baoa - capRadius*capRadius*baba;
-    float h = b*b - a*c;
-    
-    if (h >= 0.0)
-    {
-        float t = (-b - sqrt(h))/a;
-        float y = baoa + t*bard;
-        
-        // body
-        if (y > 0.0 && y < baba)
-        {
-            return t > 1e-4 ? 0.0 : 1.0;
-        }
-        
-        // caps
-        vec3 oc = y <= 0.0 ? oa : rayStart - (capStart + capVec);
-        b = dot(rayDir, oc);
-        c = dot(oc, oc) - capRadius*capRadius;
-        h = b*b - c;
-        
-        if (h > 0.0)
-        {
-            t = -b - sqrt(h);
-            return t > 1e-4 ? 0.0 : 1.0;
-        }
-    }
-    
-    return 1.0;
+    return clamp(x, 0.0, 1.0);
 }
 
-float checker(in vec2 uv)                                                  
-{                                                                          
-    vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));                                 
-    vec2 w = vec2(length(uvDDXY.xz), length(uvDDXY.yw));                    
-    vec2 i = 2.0*(abs(fract((uv-0.5*w)*0.5)-0.5)-                           
-                  abs(fract((uv+0.5*w)*0.5)-0.5))/w;                        
-    return 0.5 - 0.5*i.x*i.y;                                                     
-}                                                                          
-                                                                           
-float grid(in vec2 uv, in float lineWidth)                                 
-{                                                                          
-    vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));                                
-    vec2 uvDeriv = vec2(length(uvDDXY.xz), length(uvDDXY.yw));             
-    float targetWidth = lineWidth > 0.5 ? 1.0 - lineWidth : lineWidth;     
-    vec2 drawWidth = clamp(                                                
-        vec2(targetWidth, targetWidth), uvDeriv, vec2(0.5, 0.5));          
-    vec2 lineAA = uvDeriv * 1.5;                                           
-    vec2 gridUV = abs(fract(uv) * 2.0 - 1.0);                              
-    gridUV = lineWidth > 0.5 ? gridUV : 1.0 - gridUV;                      
-    vec2 g2 = smoothstep(drawWidth + lineAA, drawWidth - lineAA, gridUV);  
-    g2 *= clamp(targetWidth / drawWidth, 0.0, 1.0);                        
-    g2 = mix(g2, vec2(targetWidth, targetWidth),                           
-        clamp(uvDeriv * 2.0 - 1.0, 0.0, 1.0));                             
-    g2 = lineWidth > 0.5 ? 1.0 - g2 : g2;                                  
-    return mix(g2.x, 1.0, g2.y);                                           
-}                                                                          
-                                                                           
-vec3 to_gamma(in vec3 col)                                                 
-{                                                                          
-    return vec3(pow(col.x, 2.2), pow(col.y, 2.2), pow(col.z, 2.2));        
-}                                                                          
-                                                                           
-vec3 from_gamma(in vec3 col)                                               
-{                                                                          
-    return vec3(                                                           
-        pow(col.x, 1.0/2.2), pow(col.y, 1.0/2.2), pow(col.z, 1.0/2.2));    
-}                                                                          
-                                                                           
-vec3 rotate(in vec4 q, vec3 v)                                             
-{                                                                          
-    vec3 t = 2.0 * cross(q.xyz, v);                                        
-    return v + q.w * t + cross(q.xyz, t);                                  
-}                                                                          
-                                                                           
-vec4 inv(in vec4 q)                                                        
-{                                                                          
-    return vec4(-q.x, -q.y, -q.z, q.w);                                    
-}                                                                          
-                                                                           
-vec3 unrotate(in vec4 q, vec3 v)                                           
-{                                                                          
-    return rotate(inv(q), v);                                              
-}                                                                          
-                                                                           
-vec2 CapsuleUVs(                                                          
-    in vec3 pos, in vec3 capPos,                                          
-    in vec4 capRot, in float capHalfLength,                                 
-    in float capRadius, in vec2 scale)                                    
-{                                                                          
-    vec3 loc = unrotate(capRot, pos - capPos);                           
-                                                                           
-    vec2 limit = vec2(                                                     
-        2.0 * capHalfLength + 2.0 * capRadius,                              
-        PI * capRadius);                                                  
-                                                                           
-    vec2 repeat = max(round(scale * limit), 1.0);                          
-                                                                           
-    return (repeat / limit) * vec2(                                        
-        loc.x, capRadius * atan(loc.z, loc.y));                           
-}                                                                          
-                                                                           
-vec3 CapsuleNormal(                                                       
-    in vec3 pos, in vec3 capStart,                                        
-    in vec3 capVec)                                      
-{                                                                          
-    vec3 ba = capVec;                                                     
-    vec3 pa = pos - capStart;                                             
-    float h = saturate(dot(pa, ba) / dot(ba, ba));
-    
-    return normalize(pa - h*ba);                                          
-}                                                                                            
+float square(in float x)
+{
+    return x * x;
+}
 
-void main()                                                                
-{                                                                          
-    vec3 pos = fragPosition;                                               
-    vec3 nor = fragNormal;                                                 
-    vec2 uvs = fragTexCoord;                                               
-                                                                           
-    if (isCapsule == 1)                                                    
+float fast_acos(in float x)
+{
+    float y = abs(x);
+    float p = -0.1565827 * y + 1.570796;
+    p *= sqrt(max(1.0 - y, 0.0));
+    return x >= 0.0 ? p : PI - p;
+}
+
+float fast_positive_acos(in float x)
+{
+    float p = -0.1565827 * x + 1.570796;
+    return p * sqrt(max(1.0 - x, 0.0));
+}
+
+float SphereOcclusion(in vec3 pos, in vec3 nor, in vec3 sph, in float rad)
+{
+    vec3 di = sph - pos;
+    float l = length(di);
+    float nlAngle = fast_acos(dot(nor, di / l));
+    float h  = l < rad ? 1.0 : l / rad;
+    float maxRatio = 4.0;
+    vec2 uvs = vec2(nlAngle / PI, (h - 1.0) / (maxRatio - 1.0));
+    uvs = uvs * (aoLookupResolution - 1.0) / aoLookupResolution + 0.5 / aoLookupResolution;
+    return texture(aoLookupTable, uvs).r;
+}
+
+float CapsuleOcclusion(
+    in vec3 pos, in vec3 nor,
+    in vec3 capStart, in vec3 capVec, in float radius)
+{
+    vec3 ba = capVec;
+    vec3 pa = pos - capStart;
+    float t = saturate(dot(pa, ba) / dot(ba, ba));
+    return SphereOcclusion(pos, nor, capStart + t * ba, radius);
+}
+
+float SphereDirectionalOcclusion(
+    in vec3 pos, in vec3 sphere, in float radius,
+    in vec3 coneDir)
+{
+    vec3 occluder = sphere - pos;
+    float occluderLen2 = dot(occluder, occluder);
+    vec3 occluderDir = occluder * inversesqrt(occluderLen2);
+    float phi = fast_acos(dot(occluderDir, -coneDir));
+    float theta = fast_positive_acos(sqrt(occluderLen2 / (square(radius) + occluderLen2)));
+
+    vec2 uvs = vec2(phi / PI, theta / (PI / 2.0));
+    uvs = uvs * (shadowLookupResolution - 1.0) / shadowLookupResolution + 0.5 / shadowLookupResolution;
+    return texture(shadowLookupTable, uvs).r;
+}
+
+float CapsuleDirectionalOcclusion(
+    in vec3 pos, in vec3 capStart, in vec3 capVec,
+    in float capRadius, in vec3 coneDir)
+{
+    vec3 ba = capVec;
+    vec3 pa = capStart - pos;
+    vec3 cba = dot(-coneDir, ba) * -coneDir - ba;
+    float t = saturate(dot(pa, cba) / dot(cba, cba));
+
+    return SphereDirectionalOcclusion(pos, capStart + t * ba, capRadius, coneDir);
+}
+
+float checker(in vec2 uv)
+{
+    vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));
+    vec2 w = vec2(length(uvDDXY.xz), length(uvDDXY.yw));
+    vec2 i = 2.0*(abs(fract((uv-0.5*w)*0.5)-0.5)-
+                  abs(fract((uv+0.5*w)*0.5)-0.5))/w;
+    return 0.5 - 0.5*i.x*i.y;
+}
+
+float grid(in vec2 uv, in float lineWidth)
+{
+    vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));
+    vec2 uvDeriv = vec2(length(uvDDXY.xz), length(uvDDXY.yw));
+    float targetWidth = lineWidth > 0.5 ? 1.0 - lineWidth : lineWidth;
+    vec2 drawWidth = clamp(
+        vec2(targetWidth, targetWidth), uvDeriv, vec2(0.5, 0.5));
+    vec2 lineAA = uvDeriv * 1.5;
+    vec2 gridUV = abs(fract(uv) * 2.0 - 1.0);
+    gridUV = lineWidth > 0.5 ? gridUV : 1.0 - gridUV;
+    vec2 g2 = smoothstep(drawWidth + lineAA, drawWidth - lineAA, gridUV);
+    g2 *= clamp(targetWidth / drawWidth, 0.0, 1.0);
+    g2 = mix(g2, vec2(targetWidth, targetWidth),
+        clamp(uvDeriv * 2.0 - 1.0, 0.0, 1.0));
+    g2 = lineWidth > 0.5 ? 1.0 - g2 : g2;
+    return mix(g2.x, 1.0, g2.y);
+}
+
+vec3 to_gamma(in vec3 col)
+{
+    return vec3(pow(col.x, 2.2), pow(col.y, 2.2), pow(col.z, 2.2));
+}
+
+vec3 from_gamma(in vec3 col)
+{
+    return vec3(pow(col.x, 1.0/2.2), pow(col.y, 1.0/2.2), pow(col.z, 1.0/2.2));
+}
+
+vec3 rotate(in vec4 q, vec3 v)
+{
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+vec4 inv(in vec4 q)
+{
+    return vec4(-q.x, -q.y, -q.z, q.w);
+}
+
+vec3 unrotate(in vec4 q, vec3 v)
+{
+    return rotate(inv(q), v);
+}
+
+vec2 CapsuleUVs(
+    in vec3 pos, in vec3 capPos,
+    in vec4 capRot, in float capHalfLength,
+    in float capRadius, in vec2 scale)
+{
+    vec3 loc = unrotate(capRot, pos - capPos);
+
+    vec2 limit = vec2(
+        2.0 * capHalfLength + 2.0 * capRadius,
+        PI * capRadius);
+
+    vec2 repeat = max(round(scale * limit), 1.0);
+
+    return (repeat / limit) * vec2(loc.x, capRadius * atan(loc.z, loc.y));
+}
+
+vec3 CapsuleNormal(
+    in vec3 pos, in vec3 capStart,
+    in vec3 capVec)
+{
+    vec3 ba = capVec;
+    vec3 pa = pos - capStart;
+    float h = saturate(dot(pa, ba) / dot(ba, ba));
+    return normalize(pa - h*ba);
+}
+
+void main()
+{
+    vec3 pos = fragPosition;
+    vec3 nor = fragNormal;
+    vec2 uvs = fragTexCoord;
+
+    if (isCapsule == 1)
     {
-        uvs = CapsuleUVs(                                                 
-            pos,                                                           
-            capsulePosition,                                               
-            capsuleRotation,                                               
-            capsuleHalfLength,                                             
-            capsuleRadius,                                                 
-            vec2(4.0, 4.0));                                               
-                                                                           
-       nor = CapsuleNormal(pos, capsuleStart, capsuleVector);               
-    }                                                                      
-                                                                           
-    vec3 eye_dir = normalize(fragPosition - cameraPosition);               
-                                                                           
-    vec3 light_sunColor = from_gamma(sunColor);                           
-    vec3 light_sun_half = normalize(sunDir + eye_dir);                     
-                                                                           
-    vec3 light_skyColor = from_gamma(skyColor);                           
-    vec3 skyDir = vec3(0.0, -1.0, 0.0);                                    
-    vec3 light_sky_half = normalize(skyDir + eye_dir);                     
-                                                                           
+        uvs = CapsuleUVs(
+            pos,
+            capsulePosition,
+            capsuleRotation,
+            capsuleHalfLength,
+            capsuleRadius,
+            vec2(4.0, 4.0));
+
+       nor = CapsuleNormal(pos, capsuleStart, capsuleVector);
+    }
+
     float sunShadow = 1.0;
-    
-    if (shadowMode == 2)
+    for (int i = 0; i < shadowCapsuleCount; i++)
     {
-        for (int i = 0; i < shadowCapsuleCount; i++)                             
-        {                                                                      
-            sunShadow = min(sunShadow, CapsuleDirectionalOcclusion(                       
-                pos,                                                           
-                shadowCapsuleStarts[i],                                        
-                shadowCapsuleVectors[i],                                       
-                shadowCapsuleRadii[i],                                         
-                sunDir,                                                        
-                sunConeAngle));                                        
-        }                  
+        sunShadow = min(sunShadow, CapsuleDirectionalOcclusion(
+            pos,
+            shadowCapsuleStarts[i],
+            shadowCapsuleVectors[i],
+            shadowCapsuleRadii[i],
+            sunDir));
     }
-    else if (shadowMode == 1)
+
+    float ambShadow = 1.0;
+    for (int i = 0; i < aoCapsuleCount; i++)
     {
-        for (int i = 0; i < shadowCapsuleCount; i++)                             
-        {
-            sunShadow = min(sunShadow, CapsuleRayIntersect(                       
-                shadowCapsuleStarts[i],                                        
-                shadowCapsuleVectors[i],                                       
-                shadowCapsuleRadii[i],
-                pos,
-                -sunDir));
-        }  
+        ambShadow = min(ambShadow, CapsuleOcclusion(
+            pos, nor,
+            aoCapsuleStarts[i],
+            aoCapsuleVectors[i],
+            aoCapsuleRadii[i]));
     }
-    
-    float ambShadow = 1.0;                                                
-    for (int i = 0; i < aoCapsuleCount; i++)                                 
-    {                                                                      
-        ambShadow = min(ambShadow, CapsuleOcclusion(                                   
-            pos, nor,                                                      
-            aoCapsuleStarts[i],                                            
-            aoCapsuleVectors[i],                                           
-            aoCapsuleRadii[i]));                                            
-    }                                                                      
-                                                                           
-    float grid_fine = grid(20.0 * uvs, 0.025);                             
-    float grid_coarse = grid(2.0 * uvs, 0.02);                             
-    float check = checker(2.0 * uvs);                                      
-                                                                           
-    vec3 color = from_gamma(objectColor);                                  
-    vec3 albedo = color * mix(mix(mix(                                     
-        0.9, 0.95, check),                                                 
-        0.85, grid_fine),                                                  
-        1.0, grid_coarse);                                                 
-    float specularity =                                                    
-       objectSpecularity * mix(mix(0.0, 0.75, check), 1.0, grid_coarse);   
-                                                                           
-    float sun_factor_diff = max(dot(nor, -sunDir), 0.0);                   
-    float sun_factor_spec = specularity *                                  
-        ((objectGlossiness+2.0) / (8.0 * PI)) *                            
-        max(pow(dot(nor, light_sun_half), objectGlossiness), 0.0);         
-                                                                           
-    float sky_factor_diff = max(dot(nor, -skyDir), 0.0);                   
-    float sky_factor_spec = specularity *                                  
-        ((objectGlossiness+2.0) / (8.0 * PI)) *                            
-        max(pow(dot(nor, light_sky_half), objectGlossiness), 0.0);         
-                                                                           
-    float ground_factor_diff = max(dot(nor, skyDir), 0.0);                 
-                                                                           
-    vec3 ambient =                                                         
-        ambShadow * ambientStrength * light_skyColor * albedo;           
-                                                                           
-    vec3 diffuse =                                                         
-        sunShadow * sunStrength * light_sunColor *                       
-                     albedo * sun_factor_diff +                            
-                     groundStrength * light_skyColor *                    
-                     albedo * ground_factor_diff;                          
-                     skyStrength * light_skyColor *                       
-                     albedo * sky_factor_diff;                             
-                                                                           
-    float specular = sunShadow * sunStrength * sun_factor_spec +          
-                                  skyStrength * sky_factor_spec;           
-                                                                           
-    vec3 final = diffuse + ambient + specular;                             
-                                                                           
-    finalColor = vec4(to_gamma(exposure * final), objectOpacity);                    
-}    
-                                                                      
+
+    float grid_fine = grid(20.0 * uvs, 0.025);
+    float grid_coarse = grid(2.0 * uvs, 0.02);
+    float check = checker(2.0 * uvs);
+
+    vec3 albedo = from_gamma(objectColor) * mix(mix(mix(0.9, 0.95, check), 0.85, grid_fine), 1.0, grid_coarse);
+    float specularity = objectSpecularity * mix(mix(0.0, 0.75, check), 1.0, grid_coarse);
+
+    vec3 eyeDir = normalize(pos - cameraPosition);
+
+    vec3 lightSunColor = from_gamma(sunColor);
+    vec3 lightSunHalf = normalize(sunDir + eyeDir);
+
+    vec3 lightSkyColor = from_gamma(skyColor);
+    vec3 skyDir = vec3(0.0, -1.0, 0.0);
+    vec3 lightSkyHalf = normalize(skyDir + eyeDir);
+
+    float sunFactorDiff = max(dot(nor, -sunDir), 0.0);
+    float sunFactorSpec = specularity *
+        ((objectGlossiness+2.0) / (8.0 * PI)) *
+        pow(max(dot(nor, lightSunHalf), 0.0), objectGlossiness);
+
+    float skyFactorDiff = max(dot(nor, -skyDir), 0.0);
+    float skyFactorSpec = specularity *
+        ((objectGlossiness+2.0) / (8.0 * PI)) *
+        pow(max(dot(nor, lightSkyHalf), 0.0), objectGlossiness);
+
+    float groundFactorDiff = max(dot(nor, skyDir), 0.0);
+
+    vec3 ambient = ambShadow * ambientStrength * lightSkyColor * albedo;
+
+    vec3 diffuse = sunShadow * sunStrength * lightSunColor * albedo * sunFactorDiff +
+        groundStrength * lightSkyColor * albedo * groundFactorDiff;
+        skyStrength * lightSkyColor * albedo * skyFactorDiff;
+
+    float specular = sunShadow * sunStrength * sunFactorSpec + skyStrength * skyFactorSpec;
+
+    vec3 final = diffuse + ambient + specular;
+
+    finalColor = vec4(to_gamma(exposure * final), objectOpacity);
+}
+
 );
 
 typedef struct
@@ -2434,40 +2342,42 @@ typedef struct
 
     int shadowCapsuleCount;
     int shadowCapsuleStarts;
-    int shadowCapsuleVectors;       
+    int shadowCapsuleVectors;
     int shadowCapsuleRadii;
-    
+    int shadowLookupTable;
+    int shadowLookupResolution;
+
     int aoCapsuleCount;
     int aoCapsuleStarts;
-    int aoCapsuleVectors;        
+    int aoCapsuleVectors;
     int aoCapsuleRadii;
-    
+    int aoLookupTable;
+    int aoLookupResolution;
+
     int cameraPosition;
-    
+
     int objectColor;
     int objectSpecularity;
     int objectGlossiness;
     int objectOpacity;
-    
+
     int sunStrength;
-    int sunConeAngle;
     int sunDir;
     int sunColor;
     int skyStrength;
     int skyColor;
     int ambientStrength;
     int groundStrength;
-    int shadowMode;
-    
+
     int exposure;
-  
+
 } ShaderUniforms;
 
 static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
 {
     uniforms->isCapsule = GetShaderLocation(shader, "isCapsule");
     uniforms->capsulePosition =  GetShaderLocation(shader, "capsulePosition");
-    uniforms->capsuleRotation =  GetShaderLocation(shader, "capsuleRotation");        
+    uniforms->capsuleRotation =  GetShaderLocation(shader, "capsuleRotation");
     uniforms->capsuleHalfLength =  GetShaderLocation(shader, "capsuleHalfLength");
     uniforms->capsuleRadius =  GetShaderLocation(shader, "capsuleRadius");
     uniforms->capsuleStart =  GetShaderLocation(shader, "capsuleStart");
@@ -2475,31 +2385,33 @@ static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
 
     uniforms->shadowCapsuleCount = GetShaderLocation(shader, "shadowCapsuleCount");
     uniforms->shadowCapsuleStarts =  GetShaderLocation(shader, "shadowCapsuleStarts");
-    uniforms->shadowCapsuleVectors =  GetShaderLocation(shader, "shadowCapsuleVectors");        
+    uniforms->shadowCapsuleVectors =  GetShaderLocation(shader, "shadowCapsuleVectors");
     uniforms->shadowCapsuleRadii =  GetShaderLocation(shader, "shadowCapsuleRadii");
-    
+    uniforms->shadowLookupTable =  GetShaderLocation(shader, "shadowLookupTable");
+    uniforms->shadowLookupResolution =  GetShaderLocation(shader, "shadowLookupResolution");
+
     uniforms->aoCapsuleCount = GetShaderLocation(shader, "aoCapsuleCount");
     uniforms->aoCapsuleStarts =  GetShaderLocation(shader, "aoCapsuleStarts");
-    uniforms->aoCapsuleVectors =  GetShaderLocation(shader, "aoCapsuleVectors");        
+    uniforms->aoCapsuleVectors =  GetShaderLocation(shader, "aoCapsuleVectors");
     uniforms->aoCapsuleRadii =  GetShaderLocation(shader, "aoCapsuleRadii");
-    
+    uniforms->aoLookupTable =  GetShaderLocation(shader, "aoLookupTable");
+    uniforms->aoLookupResolution =  GetShaderLocation(shader, "aoLookupResolution");
+
     uniforms->cameraPosition = GetShaderLocation(shader, "cameraPosition");
-    
+
     uniforms->objectColor = GetShaderLocation(shader, "objectColor");
     uniforms->objectSpecularity = GetShaderLocation(shader, "objectSpecularity");
     uniforms->objectGlossiness = GetShaderLocation(shader, "objectGlossiness");
     uniforms->objectOpacity = GetShaderLocation(shader, "objectOpacity");
-    
+
     uniforms->sunStrength = GetShaderLocation(shader, "sunStrength");
-    uniforms->sunConeAngle = GetShaderLocation(shader, "sunConeAngle");
     uniforms->sunDir = GetShaderLocation(shader, "sunDir");
     uniforms->sunColor = GetShaderLocation(shader, "sunColor");
     uniforms->skyStrength = GetShaderLocation(shader, "skyStrength");
     uniforms->skyColor = GetShaderLocation(shader, "skyColor");
     uniforms->ambientStrength = GetShaderLocation(shader, "ambientStrength");
     uniforms->groundStrength = GetShaderLocation(shader, "groundStrength");
-    uniforms->shadowMode = GetShaderLocation(shader, "shadowMode");
-    
+
     uniforms->exposure = GetShaderLocation(shader, "exposure");
 }
 
@@ -2667,11 +2579,11 @@ static Model LoadOBJFromMemory(const char *fileText)
         model.meshCount = 1;
         model.meshes = (Mesh *)RL_CALLOC(model.meshCount, sizeof(Mesh));
         model.meshMaterial = (int *)RL_CALLOC(model.meshCount, sizeof(int));
-        
+
         // Count the faces for each material
         int *matFaces = (int *)RL_CALLOC(model.meshCount, sizeof(int));
         matFaces[0] = attrib.num_faces;
-        
+
         //--------------------------------------
         // Create the material meshes
 
@@ -2760,23 +2672,23 @@ static Model LoadOBJFromMemory(const char *fileText)
 //--------------------------------------
 
 typedef struct {
-    
+
     Color backgroundColor;
-    
+
     float sunLightConeAngle;
     float sunLightStrength;
     float sunAzimuth;
     float sunAltitude;
-    Color sunColor;    
-    
+    Color sunColor;
+
     float skyLightStrength;
     Color skyColor;
-    
+
     float groundLightStrength;
     float ambientLightStrength;
-    
+
     float exposure;
-    
+
     bool drawOrigin;
     bool drawGrid;
     bool drawChecker;
@@ -2785,32 +2697,31 @@ typedef struct {
     bool drawSkeleton;
     bool drawTransforms;
     bool drawAO;
+    bool drawShadows;
     bool drawEndSites;
     bool drawFPS;
     bool drawUI;
-    
-    int shadowMode;
-  
+
 } RenderSettings;
 
 void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
 {
     settings->backgroundColor = ArgColor(argc, argv, "backgroundColor", WHITE);
-    
+
     settings->sunLightConeAngle = ArgFloat(argc, argv, "sunLightConeAngle", 0.2f);
     settings->sunLightStrength = ArgFloat(argc, argv, "sunLightStrength", 0.25f);
     settings->sunAzimuth = ArgFloat(argc, argv, "sunAzimuth", PIf / 4.0f);
     settings->sunAltitude = ArgFloat(argc, argv, "sunAltitude", 0.8f);
     settings->sunColor = ArgColor(argc, argv, "sunColor", (Color){ 253, 255, 232 });
-    
+
     settings->skyLightStrength = ArgFloat(argc, argv, "skyLightStrength", 0.2f);
     settings->skyColor = ArgColor(argc, argv, "skyColor", (Color){ 174, 183, 190 });
-    
+
     settings->groundLightStrength = ArgFloat(argc, argv, "groundLightStrength", 0.1f);
     settings->ambientLightStrength = ArgFloat(argc, argv, "ambientLightStrength", 1.0f);
-    
+
     settings->exposure = ArgFloat(argc, argv, "exposure", 0.9f);
-    
+
     settings->drawOrigin = ArgBool(argc, argv, "drawOrigin", true);
     settings->drawGrid = ArgBool(argc, argv, "drawGrid", false);
     settings->drawChecker = ArgBool(argc, argv, "drawChecker", true);
@@ -2819,91 +2730,10 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
     settings->drawSkeleton = ArgBool(argc, argv, "drawSkeleton", true);
     settings->drawTransforms = ArgBool(argc, argv, "drawTransforms", false);
     settings->drawAO = ArgBool(argc, argv, "drawAO", true);
+    settings->drawShadows = ArgBool(argc, argv, "drawShadows", true);
     settings->drawEndSites = ArgBool(argc, argv, "drawEndSites", true);
     settings->drawFPS = ArgBool(argc, argv, "drawFPS", false);
     settings->drawUI = ArgBool(argc, argv, "drawUI", true);
-    
-    settings->shadowMode = ArgEnum(argc, argv, "shadowMode", 3, (const char*[]){"none", "hard", "soft"}, 2);
-}
-
-//--------------------------------------
-// Drawing
-//--------------------------------------
-
-static inline void DrawTransform(const Vector3 position, const Quaternion rotation, const float size)
-{
-    DrawLine3D(position, Vector3Add(position, Vector3RotateByQuaternion((Vector3){ size, 0.0, 0.0 }, rotation)), RED);
-    DrawLine3D(position, Vector3Add(position, Vector3RotateByQuaternion((Vector3){ 0.0, size, 0.0 }, rotation)), GREEN);
-    DrawLine3D(position, Vector3Add(position, Vector3RotateByQuaternion((Vector3){ 0.0, 0.0, size }, rotation)), BLUE);
-}
-
-static inline void DrawSkeleton(TransformData* xformData, bool drawEndSites, Color color, Color endSiteColor)
-{
-    for (int i = 0; i < xformData->jointCount; i++)
-    {
-        if (!xformData->endSite[i])
-        {
-            DrawSphereWires(
-                xformData->globalPositions[i], 
-                0.01f,
-                4,
-                6,
-                color);
-        }
-        else if (drawEndSites)
-        {
-            DrawCubeWiresV(
-                xformData->globalPositions[i], 
-                (Vector3){ 0.02f, 0.02f, 0.02f },
-                endSiteColor);
-        }
-        
-        if (xformData->parents[i] != -1)
-        {
-            if (!xformData->endSite[i])
-            {
-                DrawLine3D(
-                    xformData->globalPositions[i], 
-                    xformData->globalPositions[xformData->parents[i]],
-                    color);
-            }
-            else if (drawEndSites)
-            {
-                DrawLine3D(
-                    xformData->globalPositions[i], 
-                    xformData->globalPositions[xformData->parents[i]],
-                    endSiteColor);
-            }
-        }
-    }
-}
-
-static inline void DrawTransforms(TransformData* xformData)
-{
-    for (int i = 0; i < xformData->jointCount; i++)
-    {
-        if (!xformData->endSite[i])
-        {
-            DrawTransform(
-                xformData->globalPositions[i], 
-                xformData->globalRotations[i],
-                0.1f);
-        }
-    }  
-}
-
-static inline void DrawWireFrames(CapsuleData* capsuleData, Color color)
-{
-    for (int i = 0; i < capsuleData->capsuleCount; i++)
-    {
-        Vector3 capsuleStart = CapsuleStart(capsuleData->capsulePositions[i], capsuleData->capsuleRotations[i], capsuleData->capsuleHalfLengths[i]);
-        Vector3 capsuleEnd = CapsuleEnd(capsuleData->capsulePositions[i], capsuleData->capsuleRotations[i], capsuleData->capsuleHalfLengths[i]);
-        float capsuleRadius = capsuleData->capsuleRadii[i];
-
-        DrawSphereWires(capsuleStart, capsuleRadius, 4, 6, color);
-        DrawSphereWires(capsuleEnd, capsuleRadius, 4, 6, color);
-        DrawCylinderWiresEx(capsuleStart, capsuleEnd, capsuleRadius, capsuleRadius, 6, color);
-    }
 }
 
 //--------------------------------------
@@ -2911,14 +2741,14 @@ static inline void DrawWireFrames(CapsuleData* capsuleData, Color color)
 //--------------------------------------
 
 typedef struct {
-  
+
     bool playing;
     bool looping;
     float playTime;
     float playSpeed;
     bool frameSnap;
     int sampleMode;
-    
+
     float timeLimit;
     int frameLimit;
     int frameMin;
@@ -2929,7 +2759,7 @@ typedef struct {
     bool frameMaxEdit;
     float timeMin;
     float timeMax;
-  
+
 } ScrubberSettings;
 
 static inline void ScrubberSettingsInit(ScrubberSettings* settings, int argc, char** argv)
@@ -2940,7 +2770,7 @@ static inline void ScrubberSettingsInit(ScrubberSettings* settings, int argc, ch
     settings->playSpeed = ArgFloat(argc, argv, "playSpeed", 1.0f);
     settings->frameSnap = ArgBool(argc, argv, "frameSnap", true);
     settings->sampleMode = ArgEnum(argc, argv, "sampleMode", 3, (const char*[]){ "nearest", "linear", "cubic" }, 1);
-    
+
     settings->timeLimit = 0.0f;
     settings->frameLimit = 0;
     settings->frameMin = 0;
@@ -2961,17 +2791,17 @@ static inline void ScrubberSettingsRecomputeLimits(ScrubberSettings* settings, C
     {
         settings->frameLimit = max(settings->frameLimit, characterData->bvhData[i].frameCount - 1);
         settings->timeLimit = maxf(settings->timeLimit, (characterData->bvhData[i].frameCount - 1) * characterData->bvhData[i].frameTime);
-    } 
+    }
 }
 
 static inline void ScrubberSettingsInitMaxs(ScrubberSettings* settings, CharacterData* characterData)
 {
     if (characterData->count == 0) { return; }
-    
+
     settings->frameMax = characterData->bvhData[characterData->active].frameCount - 1;
     settings->frameMaxSelect = settings->frameMax;
     settings->timeMax = (characterData->bvhData[characterData->active].frameCount - 1) * characterData->bvhData[characterData->active].frameTime;
-    
+
     settings->frameMin = 0;
     settings->frameMinSelect = settings->frameMin;
     settings->timeMin = 0.0f;
@@ -2980,16 +2810,96 @@ static inline void ScrubberSettingsInitMaxs(ScrubberSettings* settings, Characte
 static inline void ScrubberSettingsClamp(ScrubberSettings* settings, CharacterData* characterData)
 {
     if (characterData->count == 0) { return; }
-  
+
     settings->frameMax = clamp(settings->frameMax, 0, characterData->bvhData[characterData->active].frameCount - 1);
     settings->frameMaxSelect = settings->frameMax;
     settings->timeMax = clampf(settings->timeMax, 0.0f, (characterData->bvhData[characterData->active].frameCount - 1) * characterData->bvhData[characterData->active].frameTime);
-    
+
     settings->frameMin = clamp(settings->frameMin, 0, settings->frameMax);
     settings->frameMinSelect = settings->frameMin;
     settings->timeMin = clampf(settings->timeMin, 0.0f, settings->timeMax);
-    
+
     settings->playTime = clampf(settings->playTime, settings->timeMin, settings->timeMax);
+}
+
+//--------------------------------------
+// Drawing
+//--------------------------------------
+
+static inline void DrawTransform(const Vector3 position, const Quaternion rotation, const float size)
+{
+    DrawLine3D(position, Vector3Add(position, Vector3RotateByQuaternion((Vector3){ size, 0.0, 0.0 }, rotation)), RED);
+    DrawLine3D(position, Vector3Add(position, Vector3RotateByQuaternion((Vector3){ 0.0, size, 0.0 }, rotation)), GREEN);
+    DrawLine3D(position, Vector3Add(position, Vector3RotateByQuaternion((Vector3){ 0.0, 0.0, size }, rotation)), BLUE);
+}
+
+static inline void DrawSkeleton(TransformData* xformData, bool drawEndSites, Color color, Color endSiteColor)
+{
+    for (int i = 0; i < xformData->jointCount; i++)
+    {
+        if (!xformData->endSite[i])
+        {
+            DrawSphereWires(
+                xformData->globalPositions[i],
+                0.01f,
+                4,
+                6,
+                color);
+        }
+        else if (drawEndSites)
+        {
+            DrawCubeWiresV(
+                xformData->globalPositions[i],
+                (Vector3){ 0.02f, 0.02f, 0.02f },
+                endSiteColor);
+        }
+
+        if (xformData->parents[i] != -1)
+        {
+            if (!xformData->endSite[i])
+            {
+                DrawLine3D(
+                    xformData->globalPositions[i],
+                    xformData->globalPositions[xformData->parents[i]],
+                    color);
+            }
+            else if (drawEndSites)
+            {
+                DrawLine3D(
+                    xformData->globalPositions[i],
+                    xformData->globalPositions[xformData->parents[i]],
+                    endSiteColor);
+            }
+        }
+    }
+}
+
+static inline void DrawTransforms(TransformData* xformData)
+{
+    for (int i = 0; i < xformData->jointCount; i++)
+    {
+        if (!xformData->endSite[i])
+        {
+            DrawTransform(
+                xformData->globalPositions[i],
+                xformData->globalRotations[i],
+                0.1f);
+        }
+    }
+}
+
+static inline void DrawWireFrames(CapsuleData* capsuleData, Color color)
+{
+    for (int i = 0; i < capsuleData->capsuleCount; i++)
+    {
+        Vector3 capsuleStart = CapsuleStart(capsuleData->capsulePositions[i], capsuleData->capsuleRotations[i], capsuleData->capsuleHalfLengths[i]);
+        Vector3 capsuleEnd = CapsuleEnd(capsuleData->capsulePositions[i], capsuleData->capsuleRotations[i], capsuleData->capsuleHalfLengths[i]);
+        float capsuleRadius = capsuleData->capsuleRadii[i];
+
+        DrawSphereWires(capsuleStart, capsuleRadius, 4, 6, color);
+        DrawSphereWires(capsuleEnd, capsuleRadius, 4, 6, color);
+        DrawCylinderWiresEx(capsuleStart, capsuleEnd, capsuleRadius, capsuleRadius, 6, color);
+    }
 }
 
 //--------------------------------------
@@ -2999,81 +2909,84 @@ static inline void ScrubberSettingsClamp(ScrubberSettings* settings, CharacterDa
 static inline void GuiOrbitCamera(OrbitCamera* camera, CharacterData* characterData)
 {
     GuiGroupBox((Rectangle){ 20, 10, 190, 200 }, "Camera");
-    
+
     GuiLabel((Rectangle){ 30, 20, 150, 20 }, "Ctrl + Left Click - Rotate");
     GuiLabel((Rectangle){ 30, 40, 150, 20 }, "Mouse Scroll - Zoom");
     GuiLabel((Rectangle){ 30, 60, 150, 20 }, TextFormat("Target: [% 5.3f % 5.3f % 5.3f]", camera->cam3d.target.x, camera->cam3d.target.y, camera->cam3d.target.z));
     GuiLabel((Rectangle){ 30, 80, 150, 20 }, TextFormat("Azimuth: %5.3f", camera->azimuth));
     GuiLabel((Rectangle){ 30, 100, 150, 20 }, TextFormat("Altitude: %5.3f", camera->altitude));
     GuiLabel((Rectangle){ 30, 120, 150, 20 }, TextFormat("Distance: %5.3f", camera->distance));
-    
+
     if (characterData->count > 0)
     {
         GuiToggle((Rectangle){ 30, 150, 100, 20 }, "Track", &camera->track);
-        GuiComboBox((Rectangle){ 30, 180, 150, 20 }, characterData->bvhData[characterData->active].jointNamesCombo, &camera->trackBone);          
+        GuiComboBox((Rectangle){ 30, 180, 150, 20 }, characterData->bvhData[characterData->active].jointNamesCombo, &camera->trackBone);
     }
 }
 
-static inline void GuiRenderSettings(RenderSettings* settings, int screenWidth, int screenHeight)
+static inline void GuiRenderSettings(RenderSettings* settings, CapsuleData* capsuleData, int screenWidth, int screenHeight)
 {
     GuiGroupBox((Rectangle){ screenWidth - 260, 10, 240, 430 }, "Rendering");
-    
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 20, 100, 20 }, 
-        "Exposure", 
+        (Rectangle){ screenWidth - 160, 20, 100, 20 },
+        "Exposure",
         TextFormat("%5.2f", settings->exposure),
-        &settings->exposure, 
+        &settings->exposure,
         0.0f, 3.0f);
-    
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 50, 100, 20 }, 
-        "Sun Light", 
+        (Rectangle){ screenWidth - 160, 50, 100, 20 },
+        "Sun Light",
         TextFormat("%5.2f", settings->sunLightStrength),
-        &settings->sunLightStrength, 
+        &settings->sunLightStrength,
         0.0f, 1.0f);
-    
-    GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 80, 100, 20 }, 
-        "Sun Softness", 
+
+    if (GuiSliderBar(
+        (Rectangle){ screenWidth - 160, 80, 100, 20 },
+        "Sun Softness",
         TextFormat("%5.2f", settings->sunLightConeAngle),
-        &settings->sunLightConeAngle, 
-        0.02f, PIf / 4.0f);
-    
+        &settings->sunLightConeAngle,
+        0.02f, PIf / 4.0f))
+    {
+        CapsuleDataUpdateShadowLookupTable(capsuleData, settings->sunLightConeAngle);
+    }
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 110, 100, 20 }, 
-        "Sky Light", 
+        (Rectangle){ screenWidth - 160, 110, 100, 20 },
+        "Sky Light",
         TextFormat("%5.2f", settings->skyLightStrength),
-        &settings->skyLightStrength, 
+        &settings->skyLightStrength,
         0.0f, 1.0f);
-    
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 140, 100, 20 }, 
-        "Ambient Light", 
+        (Rectangle){ screenWidth - 160, 140, 100, 20 },
+        "Ambient Light",
         TextFormat("%5.2f", settings->ambientLightStrength),
-        &settings->ambientLightStrength, 
+        &settings->ambientLightStrength,
         0.0f, 2.0f);
-    
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 170, 100, 20 }, 
-        "Ground Light", 
+        (Rectangle){ screenWidth - 160, 170, 100, 20 },
+        "Ground Light",
         TextFormat("%5.2f", settings->groundLightStrength),
-        &settings->groundLightStrength, 
+        &settings->groundLightStrength,
         0.0f, 0.5f);
-    
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 200, 100, 20 }, 
-        "Sun Azimuth", 
+        (Rectangle){ screenWidth - 160, 200, 100, 20 },
+        "Sun Azimuth",
         TextFormat("%5.2f", settings->sunAzimuth),
-        &settings->sunAzimuth, 
+        &settings->sunAzimuth,
         -PIf, PIf);
-    
+
     GuiSliderBar(
-        (Rectangle){ screenWidth - 160, 230, 100, 20 }, 
-        "Sun Altitude", 
+        (Rectangle){ screenWidth - 160, 230, 100, 20 },
+        "Sun Altitude",
         TextFormat("%5.2f", settings->sunAltitude),
-        &settings->sunAltitude, 
+        &settings->sunAltitude,
         0.0f, 0.49f * PIf);
-    
+
     GuiCheckBox((Rectangle){ screenWidth - 250, 260, 20, 20 }, "Draw Origin", &settings->drawOrigin);
     GuiCheckBox((Rectangle){ screenWidth - 130, 260, 20, 20 }, "Draw Grid", &settings->drawGrid);
     GuiCheckBox((Rectangle){ screenWidth - 250, 290, 20, 20 }, "Draw Checker", &settings->drawChecker);
@@ -3082,35 +2995,37 @@ static inline void GuiRenderSettings(RenderSettings* settings, int screenWidth, 
     GuiCheckBox((Rectangle){ screenWidth - 130, 320, 20, 20 }, "Draw Skeleton", &settings->drawSkeleton);
     GuiCheckBox((Rectangle){ screenWidth - 250, 350, 20, 20 }, "Draw Transforms", &settings->drawTransforms);
     GuiCheckBox((Rectangle){ screenWidth - 130, 350, 20, 20 }, "Draw AO", &settings->drawAO);
-    GuiCheckBox((Rectangle){ screenWidth - 250, 380, 20, 20 }, "Draw End Sites", &settings->drawEndSites);
-    GuiCheckBox((Rectangle){ screenWidth - 130, 380, 20, 20 }, "Draw FPS", &settings->drawFPS);
-    GuiLabel((Rectangle){ screenWidth - 240, 410, 100, 20 }, "Shadows");
-    GuiComboBox((Rectangle){ screenWidth - 180, 410, 150, 20 }, "None;Hard;Soft", &settings->shadowMode);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 380, 20, 20 }, "Draw Shadows", &settings->drawShadows);
+    GuiCheckBox((Rectangle){ screenWidth - 130, 380, 20, 20 }, "Draw End Sites", &settings->drawEndSites);
+    GuiCheckBox((Rectangle){ screenWidth - 250, 410, 20, 20 }, "Draw FPS", &settings->drawFPS);
+    GuiLabel((Rectangle){ screenWidth - 130, 410, 100, 20 }, "H Key - Hide UI");
 }
 
 static inline void GuiCharacterData(
-    CharacterData* characterData, 
-    GuiWindowFileDialogState* fileDialogState, 
+    CharacterData* characterData,
+    GuiWindowFileDialogState* fileDialogState,
     ScrubberSettings* scrubberSettings,
     char* errMsg,
-    int argc, 
+    int argc,
     char** argv)
 {
     GuiGroupBox((Rectangle){ 20, 230, 190, 340 }, "Characters");
-    
+
+#if !defined(PLATFORM_WEB)
     if (GuiButton((Rectangle){ 30, 240, 110, 20 }, "Open"))
     {
         fileDialogState->windowActive = true;
     }
-    
+#endif
+
     if (GuiButton((Rectangle){ 150, 240, 50, 20 }, "Clear"))
     {
         characterData->count = 0;
         errMsg[0] = '\0';
         ScrubberSettingsInit(scrubberSettings, argc, argv);
-        UpdateWindowTitle(NULL);
+        SetWindowTitle("BVHView");
    }
-    
+
     for (int i = 0; i < characterData->count; i++)
     {
         char bvhNameShort[20];
@@ -3124,20 +3039,23 @@ static inline void GuiCharacterData(
             memcpy(bvhNameShort, characterData->names[i], 16);
             memcpy(bvhNameShort + 16, "...", 4);
         }
-        
+
         bool bvhSelected = i == characterData->active;
         GuiToggle((Rectangle){ 30, 270 + i * 30, 140, 20 }, bvhNameShort, &bvhSelected);
-        
+
         if (bvhSelected)
         {
             characterData->active = i;
             ScrubberSettingsClamp(scrubberSettings, characterData);
-            UpdateWindowTitle(characterData->filePaths[characterData->active]);
+            
+            char windowTitle[512];
+            snprintf(windowTitle, 512, "%s - BVHView", characterData->filePaths[characterData->active]);
+            SetWindowTitle(windowTitle);
         }
-        
+
         DrawRectangleRec((Rectangle){ 180, 270 + i * 30, 20, 20 }, characterData->colors[i]);
         DrawRectangleLinesEx((Rectangle){ 180, 270 + i * 30, 20, 20 }, 1, GRAY);
-        
+
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         {
             Vector2 mousePosition = GetMousePosition();
@@ -3148,40 +3066,40 @@ static inline void GuiCharacterData(
             }
         }
     }
-    
+
     bool scaleM = characterData->scales[characterData->active] == 1.0f;
-    GuiToggle((Rectangle){ 30, 300 + MAX_CHARACTERS * 30, 30, 20 }, "m", &scaleM);
+    GuiToggle((Rectangle){ 30, 300 + CHARACTERS_MAX * 30, 30, 20 }, "m", &scaleM);
     if (scaleM) { characterData->scales[characterData->active] = 1.0f; }
-    
+
     bool scaleCM = characterData->scales[characterData->active] == 0.01f;
-    GuiToggle((Rectangle){ 65, 300 + MAX_CHARACTERS * 30, 30, 20 }, "cm", &scaleCM);
+    GuiToggle((Rectangle){ 65, 300 + CHARACTERS_MAX * 30, 30, 20 }, "cm", &scaleCM);
     if (scaleCM) { characterData->scales[characterData->active] = 0.01f; }
-    
+
     bool scaleInches = characterData->scales[characterData->active] == 0.0254f;
-    GuiToggle((Rectangle){ 100, 300 + MAX_CHARACTERS * 30, 30, 20 }, "inch", &scaleInches);
+    GuiToggle((Rectangle){ 100, 300 + CHARACTERS_MAX * 30, 30, 20 }, "inch", &scaleInches);
     if (scaleInches) { characterData->scales[characterData->active] = 0.0254f; }
-    
+
     bool scaleFeet = characterData->scales[characterData->active] == 0.3048f;
-    GuiToggle((Rectangle){ 135, 300 + MAX_CHARACTERS * 30, 30, 20 }, "feet", &scaleFeet);
+    GuiToggle((Rectangle){ 135, 300 + CHARACTERS_MAX * 30, 30, 20 }, "feet", &scaleFeet);
     if (scaleFeet) { characterData->scales[characterData->active] = 0.3048f; }
-    
+
     bool scaleAuto = characterData->scales[characterData->active] == characterData->autoScales[characterData->active];
-    GuiToggle((Rectangle){ 170, 300 + MAX_CHARACTERS * 30, 30, 20 }, "auto", &scaleAuto);
+    GuiToggle((Rectangle){ 170, 300 + CHARACTERS_MAX * 30, 30, 20 }, "auto", &scaleAuto);
     if (scaleAuto) { characterData->scales[characterData->active] = characterData->autoScales[characterData->active]; }
-    
-    GuiSliderBar(
-        (Rectangle){ 70, 330 + MAX_CHARACTERS * 30, 100, 20 }, 
-        "Radius", 
-        TextFormat("%5.2f", characterData->radii[characterData->active]),
-        &characterData->radii[characterData->active], 
-        0.01f, 0.1f);  
 
     GuiSliderBar(
-        (Rectangle){ 70, 360 + MAX_CHARACTERS * 30, 100, 20 }, 
-        "Opacity", 
+        (Rectangle){ 70, 330 + CHARACTERS_MAX * 30, 100, 20 },
+        "Radius",
+        TextFormat("%5.2f", characterData->radii[characterData->active]),
+        &characterData->radii[characterData->active],
+        0.01f, 0.1f);
+
+    GuiSliderBar(
+        (Rectangle){ 70, 360 + CHARACTERS_MAX * 30, 100, 20 },
+        "Opacity",
         TextFormat("%5.2f", characterData->opacities[characterData->active]),
-        &characterData->opacities[characterData->active], 
-        0.0f, 1.0f);  
+        &characterData->opacities[characterData->active],
+        0.0f, 1.0f);
 }
 
 static inline void GuiScrubberSettings(
@@ -3191,7 +3109,7 @@ static inline void GuiScrubberSettings(
     int screenHeight)
 {
     // TODO: Make really center
-    
+
     if (characterData->count == 0) { return; }
 
     float frameTime = characterData->bvhData[characterData->active].frameTime;
@@ -3204,9 +3122,9 @@ static inline void GuiScrubberSettings(
 
     GuiToggle((Rectangle){ screenWidth / 2 - 25, screenHeight - 80, 50, 20 }, "Play", &settings->playing);
     GuiToggle((Rectangle){ screenWidth / 2 - 85, screenHeight - 80, 50, 20 }, "Loop", &settings->looping);
-    
+
     bool speed01x = settings->playSpeed == 0.1f;
-    GuiToggle((Rectangle){ screenWidth / 2 + 40, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { settings->playSpeed = 0.1f; }    
+    GuiToggle((Rectangle){ screenWidth / 2 + 40, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { settings->playSpeed = 0.1f; }
     bool speed05x = settings->playSpeed == 0.5f;
     GuiToggle((Rectangle){ screenWidth / 2 + 80, screenHeight - 80, 30, 20 }, "0.5x", &speed05x); if (speed05x) { settings->playSpeed = 0.5f; }
     bool speed1x = settings->playSpeed == 1.0f;
@@ -3216,11 +3134,11 @@ static inline void GuiScrubberSettings(
     bool speed4x = settings->playSpeed == 4.0f;
     GuiToggle((Rectangle){ screenWidth / 2 + 200, screenHeight - 80, 30, 20 }, "4x", &speed4x); if (speed4x) { settings->playSpeed = 4.0f; }
     GuiSliderBar((Rectangle){ screenWidth / 2 + 240, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", settings->playSpeed), &settings->playSpeed, 0.0f, 4.0f);
-  
+
     int frame = clamp((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
 
     if (GuiValueBox(
-        (Rectangle){ 100, screenHeight - 80, 50, 20 }, 
+        (Rectangle){ 100, screenHeight - 80, 50, 20 },
         "Min   ", &settings->frameMinSelect, 0, settings->frameLimit, settings->frameMinEdit))
     {
         settings->frameMinEdit = !settings->frameMinEdit;
@@ -3230,34 +3148,34 @@ static inline void GuiScrubberSettings(
             ScrubberSettingsClamp(settings, characterData);
         }
     }
-    
+
     if (GuiValueBox(
-        (Rectangle){ screenWidth - 170, screenHeight - 80, 50, 20 }, 
+        (Rectangle){ screenWidth - 170, screenHeight - 80, 50, 20 },
         "Max   ", &settings->frameMaxSelect, 0, settings->frameLimit, settings->frameMaxEdit))
     {
         settings->frameMaxEdit = !settings->frameMaxEdit;
-        
+
         if (!settings->frameMaxEdit)
         {
             settings->frameMax = settings->frameMaxSelect;
             ScrubberSettingsClamp(settings, characterData);
         }
     }
-    
+
     GuiLabel(
-        (Rectangle){ screenWidth - 110, screenHeight - 80, 100, 20 }, 
+        (Rectangle){ screenWidth - 110, screenHeight - 80, 100, 20 },
         TextFormat("of %i", settings->frameLimit));
-    
+
     float frameFloatPrev = settings->frameSnap ? (float)frame : settings->playTime / frameTime;
     float frameFloat = frameFloatPrev;
-    
+
     GuiSliderBar(
-        (Rectangle){ 100, screenHeight - 50, screenWidth - 220, 20 }, 
-        TextFormat("%5.2f", settings->playTime), 
+        (Rectangle){ 100, screenHeight - 50, screenWidth - 220, 20 },
+        TextFormat("%5.2f", settings->playTime),
         TextFormat("%i", frame),
-        &frameFloat, 
+        &frameFloat,
         (float)settings->frameMin, (float)settings->frameMax);
-    
+
     if (frameFloat != frameFloatPrev)
     {
         if (settings->frameSnap)
@@ -3269,7 +3187,7 @@ static inline void GuiScrubberSettings(
         {
             settings->playTime = clampf(frameFloat * frameTime, settings->timeMin, settings->timeMax);
         }
-    }  
+    }
 }
 
 //--------------------------------------
@@ -3277,32 +3195,32 @@ static inline void GuiScrubberSettings(
 //--------------------------------------
 
 typedef struct {
-    
+
     int argc;
     char** argv;
-    
+
     int screenWidth;
     int screenHeight;
-    
+
     OrbitCamera camera;
-    
+
     Shader shader;
     ShaderUniforms uniforms;
-    
+
     Mesh groundPlaneMesh;
     Model groundPlaneModel;
     Model capsuleModel;
-    
+
     CharacterData characterData;
     CapsuleData capsuleData;
-  
+
     ScrubberSettings scrubberSettings;
     RenderSettings renderSettings;
-    
+
     GuiWindowFileDialogState fileDialogState;
 
     char errMsg[512];
-  
+
 } ApplicationState;
 
 
@@ -3318,13 +3236,13 @@ static void ApplicationUpdate(void* voidApplicationState)
         {
             char fileNameToLoad[512];
             snprintf(fileNameToLoad, 512, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
-            
+
             int prevBvhCount = app->characterData.count;
-            
+
             if (CharacterDataLoadFromFile(&app->characterData, fileNameToLoad, app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
-                
+
                 CapsuleDataUpdateForCharacters(&app->capsuleData, &app->characterData);
                 ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
                 if (prevBvhCount == 0)
@@ -3335,14 +3253,17 @@ static void ApplicationUpdate(void* voidApplicationState)
                 {
                     ScrubberSettingsClamp(&app->scrubberSettings, &app->characterData);
                 }
-                UpdateWindowTitle(app->characterData.filePaths[app->characterData.active]);
+                
+                char windowTitle[512];
+                snprintf(windowTitle, 512, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
+                SetWindowTitle(windowTitle);
             }
         }
         else
         {
             snprintf(app->errMsg, 512, "Error: File '%s' is not a BVH file.", app->fileDialogState.fileNameText);
         }
-        
+
         app->fileDialogState.SelectFilePressed = false;
     }
 
@@ -3351,9 +3272,9 @@ static void ApplicationUpdate(void* voidApplicationState)
     if (IsFileDropped())
     {
         FilePathList droppedFiles = LoadDroppedFiles();
-        
+
         int prevBvhCount = app->characterData.count;
-        
+
         for (int i = 0; i < droppedFiles.count; i++)
         {
             if (CharacterDataLoadFromFile(&app->characterData, droppedFiles.paths[i], app->errMsg, 512))
@@ -3363,12 +3284,12 @@ static void ApplicationUpdate(void* voidApplicationState)
         }
 
         UnloadDroppedFiles(droppedFiles);
-        
+
         if (app->characterData.count > prevBvhCount)
         {
             CapsuleDataUpdateForCharacters(&app->capsuleData, &app->characterData);
             ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
-            
+
             if (prevBvhCount == 0)
             {
                 ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
@@ -3377,8 +3298,10 @@ static void ApplicationUpdate(void* voidApplicationState)
             {
                 ScrubberSettingsClamp(&app->scrubberSettings, &app->characterData);
             }
-            
-            UpdateWindowTitle(app->characterData.filePaths[app->characterData.active]);
+
+            char windowTitle[512];
+            snprintf(windowTitle, 512, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
+            SetWindowTitle(windowTitle);
         }
     }
 
@@ -3394,11 +3317,11 @@ static void ApplicationUpdate(void* voidApplicationState)
     if (app->scrubberSettings.playing)
     {
         app->scrubberSettings.playTime += app->scrubberSettings.playSpeed * GetFrameTime();
-        
+
         if (app->scrubberSettings.playTime >= app->scrubberSettings.timeMax)
         {
-            app->scrubberSettings.playTime = app->scrubberSettings.looping ? 
-                fmod(app->scrubberSettings.playTime, app->scrubberSettings.timeMax) + app->scrubberSettings.timeMin : 
+            app->scrubberSettings.playTime = app->scrubberSettings.looping ?
+                fmod(app->scrubberSettings.playTime, app->scrubberSettings.timeMax) + app->scrubberSettings.timeMin :
                 app->scrubberSettings.timeMax;
         }
     }
@@ -3437,7 +3360,7 @@ static void ApplicationUpdate(void* voidApplicationState)
                 app->scrubberSettings.playTime,
                 app->characterData.scales[i]);
         }
-        
+
         TransformDataForwardKinematics(&app->characterData.xformData[i]);
     }
 
@@ -3445,8 +3368,8 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     Vector3 cameraTarget = (Vector3){ 0.0f, 1.0f, 0.0f };
 
-    if (app->characterData.count > 0 && 
-        app->camera.track && 
+    if (app->characterData.count > 0 &&
+        app->camera.track &&
         app->camera.trackBone < app->characterData.xformData[app->characterData.active].jointCount)
     {
         cameraTarget = app->characterData.xformData[app->characterData.active].globalPositions[app->camera.trackBone];
@@ -3469,11 +3392,11 @@ static void ApplicationUpdate(void* voidApplicationState)
     for (int i = 0; i < app->characterData.count; i++)
     {
         CapsuleDataAppendFromTransformData(
-            &app->capsuleData, 
-            &app->characterData.xformData[i], 
-            app->characterData.radii[i], 
-            app->characterData.colors[i], 
-            app->characterData.opacities[i], 
+            &app->capsuleData,
+            &app->characterData.xformData[i],
+            app->characterData.radii[i],
+            app->characterData.colors[i],
+            app->characterData.opacities[i],
             !app->renderSettings.drawEndSites);
     }
 
@@ -3498,7 +3421,6 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     SetShaderValue(app->shader, app->uniforms.cameraPosition, &app->camera.cam3d.position, SHADER_UNIFORM_VEC3);
     SetShaderValue(app->shader, app->uniforms.exposure, &app->renderSettings.exposure, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(app->shader, app->uniforms.sunConeAngle, &app->renderSettings.sunLightConeAngle, SHADER_UNIFORM_FLOAT);
     SetShaderValue(app->shader, app->uniforms.sunDir, &sunLightDir, SHADER_UNIFORM_VEC3);
     SetShaderValue(app->shader, app->uniforms.sunStrength, &app->renderSettings.sunLightStrength, SHADER_UNIFORM_FLOAT);
     SetShaderValue(app->shader, app->uniforms.sunColor, &sunColorValue, SHADER_UNIFORM_VEC3);
@@ -3509,15 +3431,18 @@ static void ApplicationUpdate(void* voidApplicationState)
     SetShaderValue(app->shader, app->uniforms.objectSpecularity, &objectSpecularity, SHADER_UNIFORM_FLOAT);
     SetShaderValue(app->shader, app->uniforms.objectGlossiness, &objectGlossiness, SHADER_UNIFORM_FLOAT);
     SetShaderValue(app->shader, app->uniforms.objectOpacity, &objectOpacity, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(app->shader, app->uniforms.shadowMode, &app->renderSettings.shadowMode, SHADER_UNIFORM_INT);
-
-    // Draw Ground        
+    SetShaderValueTexture(app->shader, app->uniforms.aoLookupTable, app->capsuleData.aoLookupTable);
+    SetShaderValue(app->shader, app->uniforms.aoLookupResolution, &app->capsuleData.aoLookupResolution, SHADER_UNIFORM_VEC2);
+    SetShaderValueTexture(app->shader, app->uniforms.shadowLookupTable, app->capsuleData.shadowLookupTable);
+    SetShaderValue(app->shader, app->uniforms.shadowLookupResolution, &app->capsuleData.shadowLookupResolution, SHADER_UNIFORM_VEC2);
+    
+    // Draw Ground
 
     if (app->renderSettings.drawChecker)
     {
         int groundIsCapsule = 0;
         Vector3 groundColor = { 0.9f, 0.9f, 0.9f };
-        
+
         SetShaderValue(app->shader, app->uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
 
@@ -3528,35 +3453,35 @@ static void ApplicationUpdate(void* voidApplicationState)
                 Vector3 groundSegmentPosition = {
                     (((float)i / 10) - 0.5f) * 20.0f,
                     -0.001f,
-                    (((float)j / 10) - 0.5f) * 20.0f, 
+                    (((float)j / 10) - 0.5f) * 20.0f,
                 };
-                
+
                 app->capsuleData.aoCapsuleCount = 0;
                 app->capsuleData.shadowCapsuleCount = 0;
-                
+
                 if (app->renderSettings.drawCapsules && app->renderSettings.drawAO)
                 {
                     CapsuleDataUpdateAOCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition);
                 }
-                
-                if (app->renderSettings.drawCapsules && app->renderSettings.shadowMode != 0)
+
+                if (app->renderSettings.drawCapsules && app->renderSettings.drawShadows)
                 {
-                    CapsuleDataUpdateShadowCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition, sunLightDir, app->renderSettings.sunLightConeAngle, app->renderSettings.shadowMode);
+                    CapsuleDataUpdateShadowCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition, sunLightDir, app->renderSettings.sunLightConeAngle);
                 }
-                
+
                 int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
                 int shadowCapsuleCount = min(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-                
+
                 SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
                 SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);        
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
                 SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
-                
+
                 SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
                 SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
-                SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);        
+                SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);
                 SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
-                
+
                 DrawModel(app->groundPlaneModel, groundSegmentPosition, 1.0f, WHITE);
             }
         }
@@ -3566,31 +3491,31 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     if (app->renderSettings.drawCapsules)
     {
-        int capsuleIsCapsule = 1;
-        SetShaderValue(app->shader, app->uniforms.isCapsule, &capsuleIsCapsule, SHADER_UNIFORM_INT);
-        
         // Depth sort back to front for transparency
-        
+
         for (int i = 0; i < app->capsuleData.capsuleCount; i++)
         {
             app->capsuleData.capsuleSort[i].index = i;
             app->capsuleData.capsuleSort[i].value = Vector3Distance(app->camera.cam3d.position, app->capsuleData.capsulePositions[i]);
         }
-        
+
         qsort(app->capsuleData.capsuleSort, app->capsuleData.capsuleCount, sizeof(CapsuleSort), CapsuleSortCompareLess);
-        
+
         // Render
-        
+
+        int capsuleIsCapsule = 1;
+        SetShaderValue(app->shader, app->uniforms.isCapsule, &capsuleIsCapsule, SHADER_UNIFORM_INT);
+
         for (int i = 0; i < app->capsuleData.capsuleCount; i++)
         {
             int j = app->capsuleData.capsuleSort[i].index;
-          
+
             if (app->capsuleData.capsuleOpacities[j] < 1.0f)
             {
-                rlDrawRenderBatchActive();        
-                rlDisableDepthTest(); 
+                rlDrawRenderBatchActive();
+                rlDisableDepthMask();
             }
-          
+
             Vector3 capsuleStart = CapsuleStart(app->capsuleData.capsulePositions[j], app->capsuleData.capsuleRotations[j], app->capsuleData.capsuleHalfLengths[j]);
             Vector3 capsuleVector = CapsuleVector(app->capsuleData.capsulePositions[j], app->capsuleData.capsuleRotations[j], app->capsuleData.capsuleHalfLengths[j]);
 
@@ -3599,43 +3524,43 @@ static void ApplicationUpdate(void* voidApplicationState)
 
             if (app->renderSettings.drawAO)
             {
-                CapsuleDataUpdateAOCapsulesForCapsule(&app->capsuleData, j);                  
+                CapsuleDataUpdateAOCapsulesForCapsule(&app->capsuleData, j);
             }
-            
-            if (app->renderSettings.shadowMode != 0)
+
+            if (app->renderSettings.drawShadows)
             {
-                CapsuleDataUpdateShadowCapsulesForCapsule(&app->capsuleData, j, sunLightDir, app->renderSettings.sunLightConeAngle, app->renderSettings.shadowMode);
+                CapsuleDataUpdateShadowCapsulesForCapsule(&app->capsuleData, j, sunLightDir, app->renderSettings.sunLightConeAngle);
             }
-            
+
             int shadowCapsuleCount = min(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-            int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);                
-            
+            int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
+
             SetShaderValue(app->shader, app->uniforms.objectColor, &app->capsuleData.capsuleColors[j], SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.objectOpacity, &app->capsuleData.capsuleOpacities[j], SHADER_UNIFORM_FLOAT);
 
             SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
             SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);        
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
             SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
-            
+
             SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
             SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
-            SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);        
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);
             SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
-            
+
             SetShaderValue(app->shader, app->uniforms.capsulePosition, &app->capsuleData.capsulePositions[j], SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.capsuleRotation, &app->capsuleData.capsuleRotations[j], SHADER_UNIFORM_VEC4);
             SetShaderValue(app->shader, app->uniforms.capsuleHalfLength, &app->capsuleData.capsuleHalfLengths[j], SHADER_UNIFORM_FLOAT);
             SetShaderValue(app->shader, app->uniforms.capsuleRadius, &app->capsuleData.capsuleRadii[j], SHADER_UNIFORM_FLOAT);
             SetShaderValue(app->shader, app->uniforms.capsuleStart, &capsuleStart, SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.capsuleVector, &capsuleVector, SHADER_UNIFORM_VEC3);
-            
+
             DrawModel(app->capsuleModel, Vector3Zero(), 1.0f, WHITE);
-            
+
             if (app->capsuleData.capsuleOpacities[j] < 1.0f)
             {
                 rlDrawRenderBatchActive();
-                rlEnableDepthTest();
+                rlEnableDepthMask();
             }
         }
     }
@@ -3652,15 +3577,15 @@ static void ApplicationUpdate(void* voidApplicationState)
     if (app->renderSettings.drawOrigin)
     {
         DrawTransform(
-            (Vector3){ 0.0f, 0.01f, 0.0f }, 
+            (Vector3){ 0.0f, 0.01f, 0.0f },
             QuaternionIdentity(),
             1.0f);
-    }  
+    }
 
     // Disable Depth Test
 
-    rlDrawRenderBatchActive();        
-    rlDisableDepthTest(); 
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
 
     // Draw Capsule Wireframes
 
@@ -3709,38 +3634,44 @@ static void ApplicationUpdate(void* voidApplicationState)
         if (app->fileDialogState.windowActive) { GuiLock(); }
 
         // Error Message
-        
+
         DrawText(app->errMsg, 250, 20, 15, RED);
 
-        // Render Settings           
-        
-        GuiRenderSettings(&app->renderSettings, app->screenWidth, app->screenHeight);
+        if (app->characterData.count == 0)
+        {
+            DrawText("Drag and Drop .bvh files to open them.",
+              app->screenWidth / 2 - 300, app->screenHeight / 2 - 15, 30, DARKGRAY);
+        }
+
+        // Render Settings
+
+        GuiRenderSettings(&app->renderSettings, &app->capsuleData, app->screenWidth, app->screenHeight);
 
         // FPS
-        
+
         if (app->renderSettings.drawFPS)
         {
-            DrawFPS(230, 10);              
+            DrawFPS(230, 10);
         }
-        
+
         // Camera Settings
-        
+
         GuiOrbitCamera(&app->camera, &app->characterData);
-        
+
         // Characters
-        
+
         GuiCharacterData(&app->characterData, &app->fileDialogState, &app->scrubberSettings, app->errMsg, app->argc, app->argv);
-        
+
         // Color Picker
-        
+
         if (app->characterData.colorPickerActive)
         {
             GuiGroupBox((Rectangle){ app->screenWidth - 180, 450, 160, 140 }, "Color Picker");
-            GuiColorPicker((Rectangle){ app->screenWidth - 165, 465, 110, 110 }, NULL, &app->characterData.colors[app->characterData.active]);              
+            GuiColorPicker((Rectangle){ app->screenWidth - 165, 465, 110, 110 }, NULL, &app->characterData.colors[app->characterData.active]);
         }
-        
+
         // Scrubber
-        
+
         GuiScrubberSettings(&app->scrubberSettings, &app->characterData, app->screenWidth, app->screenHeight);
 
         if (app->fileDialogState.windowActive) { GuiUnlock(); }
@@ -3762,81 +3693,85 @@ static void ApplicationUpdate(void* voidApplicationState)
 int main(int argc, char** argv)
 {
     ApplicationState app;
-    
+
     app.argc = argc;
     app.argv = argv;
-  
+
     // Init Window
-    
+
     app.screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
     app.screenHeight = ArgInt(argc, argv, "screenHeight", 720);
-    
+
     SetConfigFlags(FLAG_VSYNC_HINT);
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(app.screenWidth, app.screenHeight, "BVHView");
     SetTargetFPS(60);
-    
+
     // Camera
 
     OrbitCameraInit(&app.camera, argc, argv);
 
     // Shader
-    
+
     app.shader = LoadShaderFromMemory(shaderVS, shaderFS);
     ShaderUniformsInit(&app.uniforms, app.shader);
-    
+
     // Meshes
-    
+
     app.groundPlaneMesh = GenMeshPlane(2.0f, 2.0f, 1, 1);
     app.groundPlaneModel = LoadModelFromMesh(app.groundPlaneMesh);
     app.groundPlaneModel.materials[0].shader = app.shader;
-    
+
     app.capsuleModel = LoadOBJFromMemory(capsuleOBJ);
     app.capsuleModel.materials[0].shader = app.shader;
 
     // Character Data
-    
+
     CharacterDataInit(&app.characterData, argc, argv);
-    
+
     // Capsule Data
-    
+
     CapsuleDataInit(&app.capsuleData);
-    
+
     // Scrubber Settings
-    
+
     ScrubberSettingsInit(&app.scrubberSettings, argc, argv);
-    
+
     // Render Settings
-    
+
     RenderSettingsInit(&app.renderSettings, argc, argv);
-    
+    CapsuleDataUpdateShadowLookupTable(&app.capsuleData, app.renderSettings.sunLightConeAngle);
+
     // File Dialog
 
     app.fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
-    
+
     // Load File(s)
-    
+
     app.errMsg[0] = '\0';
-    
+
     for (int i = 1; i < argc; i++)
     {
         if (argv[i][0] == '-') { continue; }
-        
+
         CharacterDataLoadFromFile(&app.characterData, argv[i], app.errMsg, 512);
     }
-    
+
     if (app.characterData.count > 0)
     {
         app.characterData.active = app.characterData.count - 1;
-      
+
         CapsuleDataUpdateForCharacters(&app.capsuleData, &app.characterData);
         ScrubberSettingsRecomputeLimits(&app.scrubberSettings, &app.characterData);
         ScrubberSettingsInitMaxs(&app.scrubberSettings, &app.characterData);
-        UpdateWindowTitle(app.characterData.filePaths[app.characterData.active]);
+        
+        char windowTitle[512];
+        snprintf(windowTitle, 512, "%s - BVHView", app.characterData.filePaths[app.characterData.active]);
+        SetWindowTitle(windowTitle);
     }
-    
+
     // Game Loop
-  
+
 #if defined(PLATFORM_WEB)
     emscripten_set_main_loop_arg(ApplicationUpdate, &app, 0, 1);
 #else
@@ -3845,13 +3780,13 @@ int main(int argc, char** argv)
         ApplicationUpdate(&app);
     }
 #endif
-  
+
     // Unload stuff and finish
-  
+
     CapsuleDataFree(&app.capsuleData);
     CharacterDataFree(&app.characterData);
-    
-    UnloadModel(app.capsuleModel);    
+
+    UnloadModel(app.capsuleModel);
     UnloadModel(app.groundPlaneModel);
     UnloadShader(app.shader);
 
