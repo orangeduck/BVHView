@@ -1,9 +1,14 @@
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <ctype.h>
 
 #include "raylib.h"
+#include "rcamera.h"
 #include "raymath.h"
 #include "rlgl.h"
+#define RAYGUI_WINDOWBOX_STATUSBAR_HEIGHT 24
 #define GUI_WINDOW_FILE_DIALOG_IMPLEMENTATION
 #include "../examples/custom_file_dialog/gui_window_file_dialog.h"
 #define RAYGUI_IMPLEMENTATION
@@ -15,59 +20,187 @@ static int errno;
 #endif
 
 //--------------------------------------
-// Additional C Functions
+// Profiling
 //--------------------------------------
 
-#define PIf 3.14159265358979323846f
+#define ENABLE_PROFILE
+#if defined(ENABLE_PROFILE)
 
-static inline int max(int x, int y)
+#include <profileapi.h>
+
+enum
 {
-    return x > y ? x : y;
+    PROFILE_RECORD_MAX = 512,
+    PROFILE_RECORD_BUFFER_MAX = 128,
+};
+
+struct ProfileRecord;
+typedef struct ProfileRecord ProfileRecord;
+typedef struct
+{
+    uint32_t num;
+    LARGE_INTEGER freq;
+    ProfileRecord* records[PROFILE_RECORD_MAX];
+    
+} ProfileRecordData;
+
+static void ProfileRecordDataInit(ProfileRecordData* data)
+{
+    data->num = 0;
+    QueryPerformanceFrequency(&data->freq);
+    memset(data->records, 0, sizeof(ProfileRecord*) * PROFILE_RECORD_MAX);
 }
 
-static inline int min(int x, int y)
+static ProfileRecordData g_profile_records;
+
+struct ProfileRecord
 {
-    return x < y ? x : y;
+    const char* name;
+    uint32_t num;
+    bool registered;
+    
+    struct {
+        LARGE_INTEGER start;
+        LARGE_INTEGER end;
+    } buffer[PROFILE_RECORD_BUFFER_MAX];
+};
+
+static inline void ProfileRecordInit(ProfileRecord* record, const char* name)
+{
+    if (!record->registered)
+    {
+        record->registered = true;
+        record->name = name;
+        record->num = 0;
+        g_profile_records.records[g_profile_records.num] = record;
+        g_profile_records.num++;
+    }
 }
 
-static inline int clamp(int x, int min, int max)
+static inline void ProfileRecordBegin(ProfileRecord* record)
 {
-    return x < min ? min : x > max ? max : x;
+    if (record->num < PROFILE_RECORD_BUFFER_MAX)
+    {
+        QueryPerformanceCounter(&record->buffer[record->num].start);
+    }
 }
 
-static inline float maxf(float x, float y)
+static inline void ProfileRecordEnd(ProfileRecord* record)
 {
-    return x > y ? x : y;
+    if (record->num < PROFILE_RECORD_BUFFER_MAX)
+    {
+        QueryPerformanceCounter(&record->buffer[record->num].end);
+        record->num++;
+    }
 }
 
-static inline float minf(float x, float y)
+// Keeps Rolling Average of Profile Records durations in microseconds
+
+typedef struct
 {
-    return x < y ? x : y;
+    uint64_t unitScale; 
+    double alpha;
+    uint64_t frameIterations[PROFILE_RECORD_MAX];
+    uint64_t iterations[PROFILE_RECORD_MAX];
+    double averages[PROFILE_RECORD_MAX];
+    double times[PROFILE_RECORD_MAX];
+} ProfileTickers;
+
+static inline void ProfileTickersInit(ProfileTickers* tickers)
+{
+    tickers->unitScale = 1000000; // Microseconds
+    tickers->alpha = 0.9f;
+    memset(tickers->frameIterations, 0, sizeof(uint64_t) * PROFILE_RECORD_MAX);
+    memset(tickers->iterations, 0, sizeof(uint64_t) * PROFILE_RECORD_MAX);
+    memset(tickers->averages, 0, sizeof(double) * PROFILE_RECORD_MAX);
+    memset(tickers->times, 0, sizeof(double) * PROFILE_RECORD_MAX);
 }
 
-static inline float squaref(float x)
+static inline void ProfileTickersUpdate(ProfileTickers* tickers)
 {
-    return x * x;
+    for (int i = 0; i < g_profile_records.num; i++)
+    {
+        ProfileRecord* record = g_profile_records.records[i];
+        
+        if (record && record->name)
+        {
+            tickers->frameIterations[i] = 0;
+            
+            for (int j = 0; j < record->num; j++)
+            {                    
+                double time = (double)((
+                    record->buffer[j].end.QuadPart - 
+                    record->buffer[j].start.QuadPart) * tickers->unitScale) / 
+                        (double)g_profile_records.freq.QuadPart;
+                    
+                tickers->iterations[i]++;
+                tickers->frameIterations[i]++;
+                tickers->averages[i] = tickers->alpha * tickers->averages[i] + (1.0 - tickers->alpha) * time;
+                tickers->times[i] = tickers->averages[i] / (1.0 - pow(tickers->alpha, tickers->iterations[i]));
+            }
+            
+            // Flush Buffer
+            record->num = 0;
+        }
+    }
 }
 
-static inline float clampf(float x, float min, float max)
-{
-    return x > max ? max : x < min ? min : x;
-}
+#define PROFILE_INIT() ProfileRecordDataInit(&g_profile_records);
 
-static inline float saturatef(float x)
-{
-    return clampf(x, 0.0f, 1.0f);
-}
+#define PROFILE_BEGIN(NAME) \
+    static ProfileRecord __PROFILE_RECORD_##NAME = { 0 }; \
+    ProfileRecordInit(&__PROFILE_RECORD_##NAME, #NAME); \
+    ProfileRecordBegin(&__PROFILE_RECORD_##NAME);
+    
+#define PROFILE_END(NAME) \
+    ProfileRecordEnd(&__PROFILE_RECORD_##NAME);
 
-static inline float deg2radf(const float x)
-{
-    return x * (PIf / 180.0f);
-}
+static ProfileTickers tickers;
+
+#else
+#define PROFILE_INIT() 
+#define PROFILE_BEGIN(NAME) 
+#define PROFILE_END(NAME) 
+#endif
 
 //--------------------------------------
 // Additional Raylib Functions
 //--------------------------------------
+
+static inline float Max(float x, float y)
+{
+    return x > y ? x : y;
+}
+
+static inline float Min(float x, float y)
+{
+    return x < y ? x : y;
+}
+
+static inline float Saturate(float x)
+{
+    return Clamp(x, 0.0f, 1.0f);
+}
+
+static inline float Square(float x)
+{
+    return x * x;
+}
+
+static inline int ClampInt(int x, int min, int max)
+{
+    return x < min ? min : x > max ? max : x;
+}
+
+static inline int MaxInt(int x, int y)
+{
+    return x > y ? x : y;
+}
+
+static inline int MinInt(int x, int y)
+{
+    return x < y ? x : y;
+}
 
 static inline Vector3 Vector3Hermite(Vector3 p0, Vector3 p1, Vector3 v0, Vector3 v1, float alpha)
 {
@@ -103,7 +236,7 @@ static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
     };
     
     return QuaternionLength(o) < 1e-8f ?
-        QuaternionFromAxisAngle((Vector3){ 1.0f, 0.0f, 0.0f }, PIf) :
+        QuaternionFromAxisAngle((Vector3){ 1.0f, 0.0f, 0.0f }, PI) :
         QuaternionNormalize(o);
 }
 
@@ -146,7 +279,7 @@ static inline Vector3 QuaternionLog(Quaternion q)
     }
     else
     {
-        float halfangle = acosf(clampf(q.w, -1.0f, 1.0f));
+        float halfangle = acosf(Clamp(q.w, -1.0f, 1.0f));
         return Vector3Scale((Vector3){ q.x, q.y, q.z }, halfangle / length);
     }
 }
@@ -186,6 +319,73 @@ static inline Quaternion QuaternionInterpolateCubic(Quaternion r0, Quaternion r1
     Vector3 v1 = Vector3Scale(Vector3Add(r1r0, r2r1), 0.5f);
     Vector3 v2 = Vector3Scale(Vector3Add(r2r1, r3r2), 0.5f);
     return QuaternionHermite(r1, r2, v1, v2, alpha);
+}
+
+typedef struct
+{
+    Vector4 back;
+    Vector4 front;
+    Vector4 bottom;
+    Vector4 top;
+    Vector4 right;
+    Vector4 left;
+    
+} Frustum;
+
+static inline Vector4 FrustumPlaneNormalize(Vector4 plane)
+{
+    float magnitude = sqrtf(Square(plane.x) + Square(plane.y) + Square(plane.z));
+    plane.x /= magnitude;
+    plane.y /= magnitude;
+    plane.z /= magnitude;
+    plane.w /= magnitude;
+    return plane;
+}
+
+static inline Frustum FrustumFromCameraMatrices(Matrix projection, Matrix modelview)
+{
+    Matrix planes = { 0 };
+    planes.m0 = modelview.m0 * projection.m0 + modelview.m1 * projection.m4 + modelview.m2 * projection.m8 + modelview.m3 * projection.m12;
+    planes.m1 = modelview.m0 * projection.m1 + modelview.m1 * projection.m5 + modelview.m2 * projection.m9 + modelview.m3 * projection.m13;
+    planes.m2 = modelview.m0 * projection.m2 + modelview.m1 * projection.m6 + modelview.m2 * projection.m10 + modelview.m3 * projection.m14;
+    planes.m3 = modelview.m0 * projection.m3 + modelview.m1 * projection.m7 + modelview.m2 * projection.m11 + modelview.m3 * projection.m15;
+    planes.m4 = modelview.m4 * projection.m0 + modelview.m5 * projection.m4 + modelview.m6 * projection.m8 + modelview.m7 * projection.m12;
+    planes.m5 = modelview.m4 * projection.m1 + modelview.m5 * projection.m5 + modelview.m6 * projection.m9 + modelview.m7 * projection.m13;
+    planes.m6 = modelview.m4 * projection.m2 + modelview.m5 * projection.m6 + modelview.m6 * projection.m10 + modelview.m7 * projection.m14;
+    planes.m7 = modelview.m4 * projection.m3 + modelview.m5 * projection.m7 + modelview.m6 * projection.m11 + modelview.m7 * projection.m15;
+    planes.m8 = modelview.m8 * projection.m0 + modelview.m9 * projection.m4 + modelview.m10 * projection.m8 + modelview.m11 * projection.m12;
+    planes.m9 = modelview.m8 * projection.m1 + modelview.m9 * projection.m5 + modelview.m10 * projection.m9 + modelview.m11 * projection.m13;
+    planes.m10 = modelview.m8 * projection.m2 + modelview.m9 * projection.m6 + modelview.m10 * projection.m10 + modelview.m11 * projection.m14;
+    planes.m11 = modelview.m8 * projection.m3 + modelview.m9 * projection.m7 + modelview.m10 * projection.m11 + modelview.m11 * projection.m15;
+    planes.m12 = modelview.m12 * projection.m0 + modelview.m13 * projection.m4 + modelview.m14 * projection.m8 + modelview.m15 * projection.m12;
+    planes.m13 = modelview.m12 * projection.m1 + modelview.m13 * projection.m5 + modelview.m14 * projection.m9 + modelview.m15 * projection.m13;
+    planes.m14 = modelview.m12 * projection.m2 + modelview.m13 * projection.m6 + modelview.m14 * projection.m10 + modelview.m15 * projection.m14;
+    planes.m15 = modelview.m12 * projection.m3 + modelview.m13 * projection.m7 + modelview.m14 * projection.m11 + modelview.m15 * projection.m15;
+
+    Frustum frustum;
+    frustum.back = FrustumPlaneNormalize((Vector4){ planes.m3 - planes.m2, planes.m7 - planes.m6, planes.m11 - planes.m10, planes.m15 - planes.m14 });
+    frustum.front = FrustumPlaneNormalize((Vector4){ planes.m3 + planes.m2, planes.m7 + planes.m6, planes.m11 + planes.m10, planes.m15 + planes.m14 });
+    frustum.bottom = FrustumPlaneNormalize((Vector4){ planes.m3 + planes.m1, planes.m7 + planes.m5, planes.m11 + planes.m9, planes.m15 + planes.m13 });
+    frustum.top = FrustumPlaneNormalize((Vector4){ planes.m3 - planes.m1, planes.m7 - planes.m5, planes.m11 - planes.m9, planes.m15 - planes.m13 });
+    frustum.left = FrustumPlaneNormalize((Vector4){ planes.m3 + planes.m0, planes.m7 + planes.m4, planes.m11 + planes.m8, planes.m15 + planes.m12 });
+    frustum.right = FrustumPlaneNormalize((Vector4){ planes.m3 - planes.m0, planes.m7 - planes.m4, planes.m11 - planes.m8, planes.m15 - planes.m12 });
+    return frustum;
+}
+
+static inline float FrustumPlaneDistanceToPoint(Vector4 plane, Vector3 position)
+{
+    return (plane.x * position.x + plane.y * position.y + plane.z * position.z + plane.w);
+}
+
+static inline bool FrustumContainsSphere(Frustum frustum, Vector3 position, float radius)
+{
+    if (FrustumPlaneDistanceToPoint(frustum.back, position) < -radius) { return false; }
+    if (FrustumPlaneDistanceToPoint(frustum.front, position) < -radius) { return false; }
+    if (FrustumPlaneDistanceToPoint(frustum.bottom, position) < -radius) { return false; }
+    if (FrustumPlaneDistanceToPoint(frustum.top, position) < -radius) { return false; }
+    if (FrustumPlaneDistanceToPoint(frustum.left, position) < -radius) { return false; }
+    if (FrustumPlaneDistanceToPoint(frustum.right, position) < -radius) { return false; }
+    return true;
 }
 
 //--------------------------------------
@@ -282,7 +482,7 @@ static inline Color ArgColor(int argc, char** argv, const char* name, Color defa
     if (sscanf(value, "%i,%i,%i", &cx, &cy, &cz) == 3)
     {
         printf("INFO: Parsed option '%s' as '%s'\n", name, value);
-        return (Color){ clamp(cx, 0, 255), clamp(cy, 0, 255), clamp(cz, 0, 255) };
+        return (Color){ ClampInt(cx, 0, 255), ClampInt(cy, 0, 255), ClampInt(cz, 0, 255) };
     }
 
     printf("ERROR: Could not parse value '%s' given for option '%s' as color\n", value, name);
@@ -329,8 +529,8 @@ static inline void OrbitCameraUpdate(
     float dt)
 {
     camera->azimuth = camera->azimuth + 1.0f * dt * -mouseDx;
-    camera->altitude = clampf(camera->altitude + 1.0f * dt * mouseDy, 0.0, 0.4f * PIf);
-    camera->distance = clampf(camera->distance +  20.0f * dt * -mouseWheel, 0.1f, 100.0f);
+    camera->altitude = Clamp(camera->altitude + 1.0f * dt * mouseDy, 0.0, 0.4f * PI);
+    camera->distance = Clamp(camera->distance +  20.0f * dt * -mouseWheel, 0.1f, 100.0f);
 
     Quaternion rotationAzimuth = QuaternionFromAxisAngle((Vector3){0, 1, 0}, camera->azimuth);
     Vector3 position = Vector3RotateByQuaternion((Vector3){0, 0, camera->distance}, rotationAzimuth);
@@ -370,7 +570,7 @@ typedef struct
 
 } BVHJointData;
 
-static void BVHJointDataInit(BVHJointData* data)
+static inline void BVHJointDataInit(BVHJointData* data)
 {
     data->parent = -1;
     data->name = NULL;
@@ -379,13 +579,13 @@ static void BVHJointDataInit(BVHJointData* data)
     data->endSite = false;
 }
 
-static void BVHJointDataRename(BVHJointData* data, const char* name)
+static inline void BVHJointDataRename(BVHJointData* data, const char* name)
 {
     data->name = realloc(data->name, strlen(name) + 1);
     strcpy(data->name, name);
 }
 
-static void BVHJointDataFree(BVHJointData* data)
+static inline void BVHJointDataFree(BVHJointData* data)
 {
     free(data->name);
 }
@@ -410,7 +610,7 @@ typedef struct
 
 } BVHData;
 
-static void BVHDataInit(BVHData* bvh)
+static inline void BVHDataInit(BVHData* bvh)
 {
     bvh->jointCount = 0;
     bvh->joints = NULL;
@@ -421,7 +621,7 @@ static void BVHDataInit(BVHData* bvh)
     bvh->jointNamesCombo = NULL;
 }
 
-static void BVHDataFree(BVHData* bvh)
+static inline void BVHDataFree(BVHData* bvh)
 {
     for (int i = 0; i < bvh->jointCount; i++)
     {
@@ -433,7 +633,7 @@ static void BVHDataFree(BVHData* bvh)
     free(bvh->jointNamesCombo);
 }
 
-static int BVHDataAddJoint(BVHData* bvh)
+static inline int BVHDataAddJoint(BVHData* bvh)
 {
     bvh->joints = (BVHJointData*)realloc(bvh->joints, (bvh->jointCount + 1) * sizeof(BVHJointData));
     bvh->jointCount++;
@@ -441,7 +641,7 @@ static int BVHDataAddJoint(BVHData* bvh)
     return bvh->jointCount - 1;
 }
 
-static void BVHDataComputeJointNamesCombo(BVHData* bvh)
+static inline void BVHDataComputeJointNamesCombo(BVHData* bvh)
 {
     int total_size = 0;
     for (int i = 0; i < bvh->jointCount; i++)
@@ -482,7 +682,7 @@ typedef struct {
 
 } Parser;
 
-static void ParserInit(Parser* par, const char* filename, const char* data)
+static inline void ParserInit(Parser* par, const char* filename, const char* data)
 {
     par->filename = filename;
     par->offset = 0;
@@ -492,32 +692,32 @@ static void ParserInit(Parser* par, const char* filename, const char* data)
     par->err[0] = '\0';
 }
 
-static char ParserPeek(const Parser* par)
+static inline char ParserPeek(const Parser* par)
 {
     return *(par->data + par->offset);
 }
 
-static char ParserPeekForward(const Parser* par, int steps)
+static inline char ParserPeekForward(const Parser* par, int steps)
 {
     return *(par->data + par->offset + steps);
 }
 
-static bool ParserMatch(const Parser* par, char match)
+static inline bool ParserMatch(const Parser* par, char match)
 {
     return match == *(par->data + par->offset);
 }
 
-static bool ParserOneOf(const Parser* par, const char* matches)
+static inline bool ParserOneOf(const Parser* par, const char* matches)
 {
     return strchr(matches, *(par->data + par->offset));
 }
 
-static bool ParserStartsWith(const Parser* par, const char* prefix)
+static inline bool ParserStartsWithCaseless(const Parser* par, const char* prefix)
 {
     const char* start = par->data + par->offset;
     while (*prefix)
     {
-        if (*prefix != *start) { return false; }
+        if (tolower(*prefix) != tolower(*start)) { return false; }
         prefix++;
         start++;
     }
@@ -525,7 +725,7 @@ static bool ParserStartsWith(const Parser* par, const char* prefix)
     return true;
 }
 
-static void ParserInc(Parser* par)
+static inline void ParserInc(Parser* par)
 {
     if (*(par->data + par->offset) == '\n')
     {
@@ -540,14 +740,14 @@ static void ParserInc(Parser* par)
     par->offset++;
 }
 
-static void ParserAdvance(Parser* par, int num)
+static inline void ParserAdvance(Parser* par, int num)
 {
     for (int i = 0; i < num; i++) { ParserInc(par); }
 }
 
 static char parserCharName[2];
 
-static char* ParserCharName(char c)
+static inline char* ParserCharName(char c)
 {
     switch (c)
     {
@@ -579,7 +779,7 @@ static void BVHParseWhitespace(Parser* par)
 
 static bool BVHParseString(Parser* par, const char* string)
 {
-    if (ParserStartsWith(par, string))
+    if (ParserStartsWithCaseless(par, string))
     {
         ParserAdvance(par, strlen(string));
         return true;
@@ -758,9 +958,11 @@ static bool BVHParseJointChannels(BVHJointData* jnt, Parser* par)
     return true;
 }
 
+// TODO: Support for "End site"
+
 static bool BVHParseJoints(BVHData* bvh, int parent, Parser* par)
 {
-    while (ParserOneOf(par, "JE")) // Either "JOINT" or "End Site"
+    while (ParserOneOf(par, "JEje")) // Either "JOINT" or "End Site"
     {
         int j = BVHDataAddJoint(bvh);
         bvh->joints[j].parent = parent;
@@ -935,7 +1137,7 @@ typedef struct
 
 } TransformData;
 
-static void TransformDataInit(TransformData* data)
+static inline void TransformDataInit(TransformData* data)
 {
     data->jointCount = 0;
     data->parents = NULL;
@@ -946,7 +1148,7 @@ static void TransformDataInit(TransformData* data)
     data->globalRotations = NULL;
 }
 
-static void TransformDataResize(TransformData* data, BVHData* bvh)
+static inline void TransformDataResize(TransformData* data, BVHData* bvh)
 {
     data->jointCount = bvh->jointCount;
     data->parents = realloc(data->parents, data->jointCount * sizeof(int));
@@ -963,7 +1165,7 @@ static void TransformDataResize(TransformData* data, BVHData* bvh)
     }
 }
 
-static void TransformDataFree(TransformData* data)
+static inline void TransformDataFree(TransformData* data)
 {
     free(data->parents);
     free(data->endSite);
@@ -1004,19 +1206,19 @@ static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int fram
 
                 case CHANNEL_X_ROTATION:
                     rotation = QuaternionMultiply(rotation, QuaternionFromAxisAngle(
-                        (Vector3){1, 0, 0}, deg2radf(bvh->motionData[frame * bvh->channelCount + offset])));
+                        (Vector3){1, 0, 0}, DEG2RAD * bvh->motionData[frame * bvh->channelCount + offset]));
                     offset++;
                     break;
 
                 case CHANNEL_Y_ROTATION:
                     rotation = QuaternionMultiply(rotation, QuaternionFromAxisAngle(
-                        (Vector3){0, 1, 0}, deg2radf(bvh->motionData[frame * bvh->channelCount + offset])));
+                        (Vector3){0, 1, 0}, DEG2RAD * bvh->motionData[frame * bvh->channelCount + offset]));
                     offset++;
                     break;
 
                 case CHANNEL_Z_ROTATION:
                     rotation = QuaternionMultiply(rotation, QuaternionFromAxisAngle(
-                        (Vector3){0, 0, 1}, deg2radf(bvh->motionData[frame * bvh->channelCount + offset])));
+                        (Vector3){0, 0, 1}, DEG2RAD * bvh->motionData[frame * bvh->channelCount + offset]));
                     offset++;
                     break;
             }
@@ -1031,7 +1233,7 @@ static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int fram
 
 static void TransformDataSampleFrameNearest(TransformData* data, BVHData* bvh, float time, float scale)
 {
-    int frame = clamp((int)(time / bvh->frameTime + 0.5f), 0, bvh->frameCount - 1);
+    int frame = ClampInt((int)(time / bvh->frameTime + 0.5f), 0, bvh->frameCount - 1);
     TransformDataSampleFrame(data, bvh, frame, scale);
 }
 
@@ -1044,8 +1246,8 @@ static void TransformDataSampleFrameLinear(
     float scale)
 {
     const float alpha = fmod(time / bvh->frameTime, 1.0f);
-    int frame0 = clamp((int)(time / bvh->frameTime) + 0, 0, bvh->frameCount - 1);
-    int frame1 = clamp((int)(time / bvh->frameTime) + 1, 0, bvh->frameCount - 1);
+    int frame0 = ClampInt((int)(time / bvh->frameTime) + 0, 0, bvh->frameCount - 1);
+    int frame1 = ClampInt((int)(time / bvh->frameTime) + 1, 0, bvh->frameCount - 1);
 
     TransformDataSampleFrame(tmp0, bvh, frame0, scale);
     TransformDataSampleFrame(tmp1, bvh, frame1, scale);
@@ -1068,10 +1270,10 @@ static void TransformDataSampleFrameCubic(
     float scale)
 {
     const float alpha = fmod(time / bvh->frameTime, 1.0f);
-    int frame0 = clamp((int)(time / bvh->frameTime) - 1, 0, bvh->frameCount - 1);
-    int frame1 = clamp((int)(time / bvh->frameTime) + 0, 0, bvh->frameCount - 1);
-    int frame2 = clamp((int)(time / bvh->frameTime) + 1, 0, bvh->frameCount - 1);
-    int frame3 = clamp((int)(time / bvh->frameTime) + 2, 0, bvh->frameCount - 1);
+    int frame0 = ClampInt((int)(time / bvh->frameTime) - 1, 0, bvh->frameCount - 1);
+    int frame1 = ClampInt((int)(time / bvh->frameTime) + 0, 0, bvh->frameCount - 1);
+    int frame2 = ClampInt((int)(time / bvh->frameTime) + 1, 0, bvh->frameCount - 1);
+    int frame3 = ClampInt((int)(time / bvh->frameTime) + 2, 0, bvh->frameCount - 1);
 
     TransformDataSampleFrame(tmp0, bvh, frame0, scale);
     TransformDataSampleFrame(tmp1, bvh, frame1, scale);
@@ -1149,11 +1351,11 @@ static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
     data->active = 0;
 
     data->colors[0] = ArgColor(argc, argv, "-color0", ORANGE);
-    data->colors[1] = ArgColor(argc, argv, "-color1", VIOLET);
+    data->colors[1] = ArgColor(argc, argv, "-color1", (Color){ 38, 134, 157, 255 });
     data->colors[2] = ArgColor(argc, argv, "-color2", PINK);
-    data->colors[3] = ArgColor(argc, argv, "-color3", PURPLE);
-    data->colors[4] = ArgColor(argc, argv, "-color4", MAGENTA);
-    data->colors[5] = ArgColor(argc, argv, "-color5", GREEN);
+    data->colors[3] = ArgColor(argc, argv, "-color3", LIME);
+    data->colors[4] = ArgColor(argc, argv, "-color4", VIOLET);
+    data->colors[5] = ArgColor(argc, argv, "-color5", MAROON);
 
     for (int i = 0; i < CHARACTERS_MAX; i++)
     {
@@ -1228,7 +1430,7 @@ static bool CharacterDataLoadFromFile(
             float height = 1e-8f;
             for (int j = 0; j < data->xformData[data->count].jointCount; j++)
             {
-                height = maxf(height, data->xformData[data->count].globalPositions[j].y);
+                height = Max(height, data->xformData[data->count].globalPositions[j].y);
             }
 
             data->scales[data->count] = height > 10.0f ? 0.01f : 1.0f;
@@ -1283,7 +1485,7 @@ static inline float NearestPointOnLineSegment(
     Vector3 ap = Vector3Subtract(point, lineStart);
     float lengthsq = Vector3LengthSqr(ab);
 
-    return lengthsq < 1e-8f ? 0.5f : saturatef(Vector3DotProduct(ab, ap) / lengthsq);
+    return lengthsq < 1e-8f ? 0.5f : Saturate(Vector3DotProduct(ab, ap) / lengthsq);
 }
 
 static inline void NearestPointBetweenLineSegments(
@@ -1309,7 +1511,7 @@ static inline void NearestPointBetweenLineSegments(
 static inline float NearestPointBetweenLineSegmentAndGroundPlane(Vector3 lineStart, Vector3 lineEnd)
 {
     Vector3 lineVector = Vector3Subtract(lineEnd, lineStart);
-    return fabs(lineVector.y) < 1e-8f ? 0.5f : saturatef((-lineStart.y) / lineVector.y);
+    return fabs(lineVector.y) < 1e-8f ? 0.5f : Saturate((-lineStart.y) / lineVector.y);
 }
 
 static inline void NearestPointBetweenLineSegmentAndGroundSegment(
@@ -1431,15 +1633,15 @@ static inline float SphereOcclusionLookup(float nlAngle, float h, float maxRatio
     float nl = cosf(nlAngle);
     float h2 = h*h;
 
-    float res = maxf(0.0, nl) / h2;
+    float res = Max(0.0, nl) / h2;
     float k2 = 1.0 - h2*nl*nl;
     if (k2 > 1e-4f)
     {
         res = nl * acosf(-nl*sqrtf((h2 - 1.0f) / (1.0f - nl*nl))) - sqrtf(k2*(h2 - 1.0f));
-        res = (res / h2 + atanf(sqrt(k2 / (h2 - 1.0f)))) / PIf;
+        res = (res / h2 + atanf(sqrt(k2 / (h2 - 1.0f)))) / PI;
     }
 
-    float decay = maxf(1.0f - (h - 1.0f) / (maxRatio - 1.0f), 0.0f);
+    float decay = Max(1.0f - (h - 1.0f) / (maxRatio - 1.0f), 0.0f);
 
     return 1.0f - res * decay;
 }
@@ -1455,9 +1657,9 @@ static inline float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float
 
 static inline float CapsuleSphereIntersectionArea(float r1, float r2, float d)
 {
-    if (minf(r1, r2) <= maxf(r1, r2) - d)
+    if (Min(r1, r2) <= Max(r1, r2) - d)
     {
-        return 1.0f - maxf(cosf(r1), cosf(r2));
+        return 1.0f - Max(cosf(r1), cosf(r2));
     }
     else if (r1 + r2 <= d)
     {
@@ -1465,10 +1667,10 @@ static inline float CapsuleSphereIntersectionArea(float r1, float r2, float d)
     }
 
     float delta = fabs(r1 - r2);
-    float x = 1.0f - saturatef((d - delta) / maxf(r1 + r2 - delta, 1e-8f));
-    float area = squaref(x) * (-2.0f * x + 3.0f);
+    float x = 1.0f - Saturate((d - delta) / Max(r1 + r2 - delta, 1e-8f));
+    float area = Square(x) * (-2.0f * x + 3.0f);
 
-    return area * (1.0f - maxf(cosf(r1), cosf(r2)));
+    return area * (1.0f - Max(cosf(r1), cosf(r2)));
 }
 
 static inline float SphereDirectionalOcclusionLookup(float phi, float theta, float coneAngle)
@@ -1482,10 +1684,10 @@ static inline float SphereDirectionalOcclusion(
 {
     Vector3 occluder = Vector3Subtract(sphere, pos);
     float occluderLen2 = Vector3DotProduct(occluder, occluder);
-    Vector3 occluderDir = Vector3Scale(occluder, 1.0f / maxf(sqrtf(occluderLen2), 1e-8f));
+    Vector3 occluderDir = Vector3Scale(occluder, 1.0f / Max(sqrtf(occluderLen2), 1e-8f));
 
     float phi = acosf(Vector3DotProduct(occluderDir, Vector3Negate(coneDir)));
-    float theta = acosf(sqrtf(occluderLen2 / (squaref(radius) + occluderLen2)));
+    float theta = acosf(sqrtf(occluderLen2 / (Square(radius) + occluderLen2)));
     
     return SphereDirectionalOcclusionLookup(phi, theta, coneAngle);
 }
@@ -1502,7 +1704,7 @@ static inline float CapsuleDirectionalOcclusion(
     Vector3 ba = capVec;
     Vector3 pa = Vector3Subtract(capStart, pos);
     Vector3 cba = CapsuleProjectOnLight(ba, coneDir);
-    float t = saturatef(Vector3DotProduct(pa, cba) / (Vector3DotProduct(cba, cba)));
+    float t = Saturate(Vector3DotProduct(pa, cba) / (Vector3DotProduct(cba, cba)));
 
     return SphereDirectionalOcclusion(pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
 }
@@ -1574,9 +1776,9 @@ static void CapsuleDataUpdateAOLookupTable(CapsuleData* data)
     {
         for (int x = 0; x < width; x++)
         {
-            float nlAngle = (((float)x) / (width - 1)) * PIf;
+            float nlAngle = (((float)x) / (width - 1)) * PI;
             float h = 1.0f + (maxRatio - 1.0f) * (((float)y) / (height - 1));
-            ((unsigned char*)data->aoLookupImage.data)[y * width + x] = (unsigned char)clampf(255.0 * SphereOcclusionLookup(nlAngle, h, maxRatio), 0.0, 255.0);
+            ((unsigned char*)data->aoLookupImage.data)[y * width + x] = (unsigned char)Clamp(255.0 * SphereOcclusionLookup(nlAngle, h, maxRatio), 0.0, 255.0);
         }
     }
 
@@ -1592,9 +1794,9 @@ static void CapsuleDataUpdateShadowLookupTable(CapsuleData* data, float coneAngl
     {
         for (int x = 0; x < width; x++)
         {
-            float phi = (((float)x) / (width - 1)) * PIf;
-            float theta = ((float)y) / (height - 1) * (PIf / 2.0f);
-            ((unsigned char*)data->shadowLookupImage.data)[y * width + x] = (unsigned char)clampf(255.0 * SphereDirectionalOcclusionLookup(phi, theta, coneAngle), 0.0, 255.0);
+            float phi = (((float)x) / (width - 1)) * PI;
+            float theta = ((float)y) / (height - 1) * (PI / 2.0f);
+            ((unsigned char*)data->shadowLookupImage.data)[y * width + x] = (unsigned char)Clamp(255.0 * SphereDirectionalOcclusionLookup(phi, theta, coneAngle), 0.0, 255.0);
         }
     }
     
@@ -1706,7 +1908,7 @@ static void CapsuleDataFree(CapsuleData* data)
     UnloadTexture(data->shadowLookupTable);
 }
 
-static void CapsuleDataReset(CapsuleData* data)
+static inline void CapsuleDataReset(CapsuleData* data)
 {
     data->capsuleCount = 0;
     data->aoCapsuleCount = 0;
@@ -1722,7 +1924,7 @@ static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData*
         if (ignoreEndSite && xforms->endSite[i]) { continue; }
 
         float capsuleHalfLength = Vector3Length(xforms->localPositions[i]) / 2.0f;
-        float capsuleRadius = minf(maxCapsuleRadius, capsuleHalfLength) + (i % 2) * 0.001f;
+        float capsuleRadius = Min(maxCapsuleRadius, capsuleHalfLength) + (i % 2) * 0.001f;
 
         if (capsuleRadius < 0.001f) { continue; }
 
@@ -1745,12 +1947,24 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
 {
     data->aoCapsuleCount = 0;
 
+    float segmentRadius = sqrtf(2.0f);
+
     for (int i = 0; i < data->capsuleCount; i++)
     {
-        Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleVector = CapsuleVector(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
+        Vector3 capsulePosition = data->capsulePositions[i];
+        float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
+        float maxRatio = 4.0f;
+        
+        if (Vector3Distance(groundSegmentPosition, capsulePosition) - segmentRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+        
+        Quaternion capsuleRotation = data->capsuleRotations[i];
+        Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
 
         float capsuleTime;
         Vector3 groundPoint;
@@ -1761,9 +1975,14 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
             capsuleEnd,
             (Vector3){ groundSegmentPosition.x - 1.0f, 0.0f, groundSegmentPosition.z - 1.0f },
             (Vector3){ groundSegmentPosition.x + 1.0f, 0.0f, groundSegmentPosition.z + 1.0f });
-
+    
         Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
-
+        
+        if (Vector3Distance(groundPoint, capsulePoint) > maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+        
         float capsuleOcclusion = Vector3Distance(groundPoint, capsulePoint) < capsuleRadius ? 0.0f :
             SphereOcclusion(groundPoint, (Vector3){ 0.0f, 1.0f, 0.0f }, capsulePoint, capsuleRadius);
 
@@ -1787,21 +2006,34 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
 
 static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsuleIndex)
 {
-    Vector3 queryCapsuleStart = CapsuleStart(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
-    Vector3 queryCapsuleEnd = CapsuleEnd(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
-    Vector3 queryCapsuleVector = CapsuleVector(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
+    Vector3 queryCapsulePosition = data->capsulePositions[capsuleIndex];
+    float queryCapsuleHalfLength = data->capsuleHalfLengths[capsuleIndex];
     float queryCapsuleRadius = data->capsuleRadii[capsuleIndex];
+    Quaternion queryCapsuleRotation = data->capsuleRotations[capsuleIndex];
+    Vector3 queryCapsuleStart = CapsuleStart(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLength);
+    Vector3 queryCapsuleEnd = CapsuleEnd(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLength);
+    Vector3 queryCapsuleVector = CapsuleVector(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLength);
 
     data->aoCapsuleCount = 0;
 
     for (int i = 0; i < data->capsuleCount; i++)
     {
         if (i == capsuleIndex) { continue; }
-
-        Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleVector = CapsuleVector(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
+        
+        Vector3 capsulePosition = data->capsulePositions[i];
         float capsuleRadius = data->capsuleRadii[i];
+        float capsuleHalfLength = data->capsuleHalfLengths[i];
+        float maxRatio = 4.0f;
+
+        if (Vector3Distance(queryCapsulePosition, capsulePosition) - queryCapsuleHalfLength - queryCapsuleRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+
+        Quaternion capsuleRotation = data->capsuleRotations[i];
+        Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
         
         float capsuleTime, queryTime;
         NearestPointBetweenLineSegments(
@@ -1814,14 +2046,19 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
 
         Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
         Vector3 queryPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, queryTime));
-
+        
+        if (Vector3Distance(queryPoint, capsulePoint) - queryCapsuleRadius > maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+      
         Vector3 surfaceNormal = Vector3Normalize(Vector3Subtract(capsulePoint, queryPoint));
         Vector3 surfacePoint = Vector3Add(queryPoint, Vector3Scale(surfaceNormal, queryCapsuleRadius));
         
         float capsuleOcclusion = Vector3Distance(queryPoint, capsulePoint) <= queryCapsuleRadius + capsuleRadius ? 0.0f :
             SphereOcclusion(surfacePoint, surfaceNormal, capsulePoint, capsuleRadius);
 
-        if (capsuleOcclusion < 0.95f)
+        if (capsuleOcclusion < 0.99f)
         {
             data->aoCapsuleSort[data->aoCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->aoCapsuleCount++;
@@ -1842,15 +2079,29 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
 static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition, Vector3 lightDir, float lightConeAngle)
 {
     Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
+    float segmentRadius = sqrtf(2.0f);
 
     data->shadowCapsuleCount = 0;
 
     for (int i = 0; i < data->capsuleCount; i++)
     {
-        Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleVector = CapsuleVector(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
+        Vector3 capsulePosition = data->capsulePositions[i];
+        float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
+      
+        float midRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsulePosition, Vector3Add(capsulePosition, lightRay));
+        Vector3 groundCapsuleMid = Vector3Add(capsulePosition, Vector3Scale(lightRay, midRayTime));
+        float maxRatio = 4.0f;
+
+        if (Vector3Distance(groundSegmentPosition, groundCapsuleMid) - segmentRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+      
+        Quaternion capsuleRotation = data->capsuleRotations[i];
+        Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
 
         float startRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleStart, Vector3Add(capsuleStart, lightRay));
         float endRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleEnd, Vector3Add(capsuleEnd, lightRay));
@@ -1858,16 +2109,22 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         Vector3 groundCapsuleStart = Vector3Add(capsuleStart, Vector3Scale(lightRay, startRayTime));
         Vector3 groundCapsuleEnd = Vector3Add(capsuleEnd, Vector3Scale(lightRay, endRayTime));
         
-        groundCapsuleStart.x = clampf(groundCapsuleStart.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
-        groundCapsuleStart.z = clampf(groundCapsuleStart.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
-        groundCapsuleEnd.x = clampf(groundCapsuleEnd.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
-        groundCapsuleEnd.z = clampf(groundCapsuleEnd.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
+        groundCapsuleStart.x = Clamp(groundCapsuleStart.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
+        groundCapsuleStart.z = Clamp(groundCapsuleStart.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
+        groundCapsuleEnd.x = Clamp(groundCapsuleEnd.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
+        groundCapsuleEnd.z = Clamp(groundCapsuleEnd.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
         
-        float capsuleOcclusion = minf(
+        if (Vector3Distance(groundSegmentPosition, groundCapsuleStart) - segmentRadius > maxRatio * capsuleRadius &&
+            Vector3Distance(groundSegmentPosition, groundCapsuleEnd) - segmentRadius > maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+        
+        float capsuleOcclusion = Min(
             CapsuleDirectionalOcclusion(groundCapsuleStart, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle),
             CapsuleDirectionalOcclusion(groundCapsuleEnd, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle));
 
-        if (capsuleOcclusion < 0.95f)
+        if (capsuleOcclusion < 0.99f)
         {
             data->shadowCapsuleSort[data->shadowCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->shadowCapsuleCount++;
@@ -1888,11 +2145,14 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
 static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int capsuleIndex, Vector3 lightDir, float lightConeAngle)
 {
     Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
-
-    Vector3 queryCapsuleStart = CapsuleStart(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
-    Vector3 queryCapsuleEnd = CapsuleEnd(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
-    Vector3 queryCapsuleVector = CapsuleVector(data->capsulePositions[capsuleIndex], data->capsuleRotations[capsuleIndex], data->capsuleHalfLengths[capsuleIndex]);
+    
+    Vector3 queryCapsulePosition = data->capsulePositions[capsuleIndex];
+    float queryCapsuleHalfLife = data->capsuleHalfLengths[capsuleIndex];
     float queryCapsuleRadius = data->capsuleRadii[capsuleIndex];
+    Quaternion queryCapsuleRotation = data->capsuleRotations[capsuleIndex];
+    Vector3 queryCapsuleStart = CapsuleStart(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLife);
+    Vector3 queryCapsuleEnd = CapsuleEnd(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLife);
+    Vector3 queryCapsuleVector = CapsuleVector(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLife);
 
     data->shadowCapsuleCount = 0;
 
@@ -1900,13 +2160,34 @@ static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int cap
     {
         if (i == capsuleIndex) { continue; }
         
-        // This isn't 100% accurate but it will do for now...
-        
-        Vector3 capsuleStart = CapsuleStart(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleEnd = CapsuleEnd(data->capsulePositions[i], data->capsuleRotations[i], data->capsuleHalfLengths[i]);
-        Vector3 capsuleVector = Vector3Subtract(capsuleEnd, capsuleStart);
+        Vector3 capsulePosition = data->capsulePositions[i];
+        float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
         
+        float midRayTime, midRayQueryTime;
+        NearestPointBetweenLineSegments(
+            &midRayTime,
+            &midRayQueryTime,
+            capsulePosition,
+            Vector3Add(capsulePosition, lightRay),
+            queryCapsuleStart,
+            queryCapsuleEnd);
+        
+        Vector3 capsuleMid = Vector3Add(capsulePosition, Vector3Scale(lightRay, midRayTime));
+        float maxRatio = 4.0f;
+
+        if (Vector3Distance(queryCapsulePosition, capsuleMid) - queryCapsuleHalfLife - queryCapsuleRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+        
+        Quaternion capsuleRotation = data->capsuleRotations[i];
+        Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
+        Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
+        
+        // This isn't 100% accurate but it will do for now...
+
         float startRayTime, startRayQueryTime;
         NearestPointBetweenLineSegments(
             &startRayTime,
@@ -1937,11 +2218,11 @@ static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int cap
         Vector3 surfaceEndNormal = Vector3Normalize(Vector3Subtract(rayEndPoint, queryEndPoint));
         Vector3 surfaceEndPoint = Vector3Add(queryEndPoint, Vector3Scale(surfaceEndNormal, queryCapsuleRadius));
 
-        float capsuleOcclusion = minf(
+        float capsuleOcclusion = Min(
             CapsuleDirectionalOcclusion(surfaceStartPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle),
             CapsuleDirectionalOcclusion(surfaceEndPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle));
         
-        if (capsuleOcclusion < 0.95f)
+        if (capsuleOcclusion < 0.99f)
         {
             data->shadowCapsuleSort[data->shadowCapsuleCount] = (CapsuleSort){ i, capsuleOcclusion };
             data->shadowCapsuleCount++;
@@ -1976,14 +2257,14 @@ static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, Char
 
 enum
 {
-    AO_CAPSULES_MAX = 16,
-    SHADOW_CAPSULES_MAX = 32,
+    AO_CAPSULES_MAX = 32,
+    SHADOW_CAPSULES_MAX = 64,
 };
 
 #define GLSL(X) \
   "#version 300 es\n" \
-  "#define AO_CAPSULES_MAX 16\n" \
-  "#define SHADOW_CAPSULES_MAX 32\n" \
+  "#define AO_CAPSULES_MAX 32\n" \
+  "#define SHADOW_CAPSULES_MAX 64\n" \
   "#define PI 3.14159265359\n" \
   #X
 
@@ -2419,140 +2700,57 @@ static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
 // Models
 //--------------------------------------
 
-static const char* capsuleOBJ =
-"v 0.82165808 -0.82165808 -1.0579772e-18     \n"
-"v 0.82165808 -0.58100000 0.58100000         \n"
-"v 0.82165808 8.7595780e-17 0.82165808       \n"
-"v 0.82165808 0.58100000 0.58100000          \n"
-"v 0.82165808 0.82165808 9.9566116e-17       \n"
-"v 0.82165808 0.58100000 -0.58100000         \n"
-"v 0.82165808 2.8884397e-16 -0.82165808      \n"
-"v 0.82165808 -0.58100000 -0.58100000        \n"
-"v -0.82165808 -0.82165808 -1.0579772e-18    \n"
-"v -0.82165808 -0.58100000 0.58100000        \n"
-"v -0.82165808 -1.3028313e-17 0.82165808     \n"
-"v -0.82165808 0.58100000 0.58100000         \n"
-"v -0.82165808 0.82165808 9.9566116e-17      \n"
-"v -0.82165808 0.58100000 -0.58100000        \n"
-"v -0.82165808 1.8821987e-16 -0.82165808     \n"
-"v -0.82165808 -0.58100000 -0.58100000       \n"
-"v 1.16200000 1.5874776e-16 -1.0579772e-18   \n"
-"v -1.16200000 1.6443801e-17 -1.0579772e-18  \n"
-"v -9.1030792e-3 -1.15822938 -1.0579772e-18  \n"
-"v 9.1030792e-3 -1.15822938 -1.0579772e-18   \n"
-"v 9.1030792e-3 -0.81899185 0.81899185       \n"
-"v -9.1030792e-3 -0.81899185 0.81899185      \n"
-"v 9.1030792e-3 1.7232088e-17 1.15822938     \n"
-"v -9.1030792e-3 1.6117282e-17 1.15822938    \n"
-"v 9.1030792e-3 0.81899185 0.81899185        \n"
-"v -9.1030792e-3 0.81899185 0.81899185       \n"
-"v 9.1030792e-3 1.15822938 1.4078421e-16     \n"
-"v -9.1030792e-3 1.15822938 1.4078421e-16    \n"
-"v 9.1030792e-3 0.81899185 -0.81899185       \n"
-"v -9.1030792e-3 0.81899185 -0.81899185      \n"
-"v 9.1030792e-3 3.0091647e-16 -1.15822938    \n"
-"v -9.1030792e-3 2.9980166e-16 -1.15822938   \n"
-"v 9.1030792e-3 -0.81899185 -0.81899185      \n"
-"v -9.1030792e-3 -0.81899185 -0.81899185     \n"
-"vn 0.71524683 -0.69887193 -2.5012597e-16    \n"
-"vn 0.61185516 -0.55930013 0.55930013        \n"
-"vn 0.71524683 0.0000000e+0 0.69887193       \n"
-"vn 0.61185516 0.55930013 0.55930013         \n"
-"vn 0.71524683 0.69887193 1.5632873e-17      \n"
-"vn 0.61185516 0.55930013 -0.55930013        \n"
-"vn 0.71524683 6.2531494e-17 -0.69887193     \n"
-"vn 0.61185516 -0.55930013 -0.55930013       \n"
-"vn -0.71524683 -0.69887193 -2.5012597e-16   \n"
-"vn -0.61185516 -0.55930013 0.55930013       \n"
-"vn -0.71524683 0.0000000e+0 0.69887193      \n"
-"vn -0.61185516 0.55930013 0.55930013        \n"
-"vn -0.71524683 0.69887193 4.6898620e-17     \n"
-"vn -0.61185516 0.55930013 -0.55930013       \n"
-"vn -0.71524683 4.6898620e-17 -0.69887193    \n"
-"vn -0.61185516 -0.55930013 -0.55930013      \n"
-"vn 1.00000000 1.5208752e-17 -2.6615316e-17  \n"
-"vn -1.00000000 -1.5208752e-17 2.2813128e-17 \n"
-"vn -0.19614758 -0.98057439 -2.2848712e-16   \n"
-"vn 0.26047011 -0.96548191 -2.4273177e-16    \n"
-"vn 0.13072302 -0.70103905 0.70103905        \n"
-"vn -0.19614758 -0.69337080 0.69337080       \n"
-"vn 0.22349711 5.9825845e-2 0.97286685       \n"
-"vn -0.22349711 -5.9825845e-2 0.97286685     \n"
-"vn 0.15641931 0.75510180 0.63667438         \n"
-"vn -0.15641931 0.63667438 0.75510180        \n"
-"vn 0.22349711 0.97286685 -5.9825845e-2      \n"
-"vn -0.22349711 0.97286685 5.9825845e-2      \n"
-"vn 0.15641931 0.63667438 -0.75510180        \n"
-"vn -0.15641931 0.75510180 -0.63667438       \n"
-"vn 0.22349711 -5.9825845e-2 -0.97286685     \n"
-"vn -0.22349711 5.9825845e-2 -0.97286685     \n"
-"vn 0.15641931 -0.75510180 -0.63667438       \n"
-"vn -0.15641931 -0.63667438 -0.75510180      \n"
-"f 1//1 17//17 2//2                          \n"
-"f 1//1 20//20 8//8                          \n"
-"f 2//2 17//17 3//3                          \n"
-"f 2//2 20//20 1//1                          \n"
-"f 2//2 23//23 21//21                        \n"
-"f 3//3 17//17 4//4                          \n"
-"f 3//3 23//23 2//2                          \n"
-"f 4//4 17//17 5//5                          \n"
-"f 4//4 23//23 3//3                          \n"
-"f 4//4 27//27 25//25                        \n"
-"f 5//5 17//17 6//6                          \n"
-"f 5//5 27//27 4//4                          \n"
-"f 6//6 17//17 7//7                          \n"
-"f 6//6 27//27 5//5                          \n"
-"f 6//6 31//31 29//29                        \n"
-"f 7//7 17//17 8//8                          \n"
-"f 7//7 31//31 6//6                          \n"
-"f 8//8 17//17 1//1                          \n"
-"f 8//8 20//20 33//33                        \n"
-"f 8//8 31//31 7//7                          \n"
-"f 9//9 18//18 16//16                        \n"
-"f 9//9 19//19 10//10                        \n"
-"f 10//10 18//18 9//9                        \n"
-"f 10//10 19//19 22//22                      \n"
-"f 10//10 24//24 11//11                      \n"
-"f 11//11 18//18 10//10                      \n"
-"f 11//11 24//24 12//12                      \n"
-"f 12//12 18//18 11//11                      \n"
-"f 12//12 24//24 26//26                      \n"
-"f 12//12 28//28 13//13                      \n"
-"f 13//13 18//18 12//12                      \n"
-"f 13//13 28//28 14//14                      \n"
-"f 14//14 18//18 13//13                      \n"
-"f 14//14 28//28 30//30                      \n"
-"f 14//14 32//32 15//15                      \n"
-"f 15//15 18//18 14//14                      \n"
-"f 15//15 32//32 16//16                      \n"
-"f 16//16 18//18 15//15                      \n"
-"f 16//16 19//19 9//9                        \n"
-"f 16//16 32//32 34//34                      \n"
-"f 19//19 33//33 20//20                      \n"
-"f 20//20 21//21 19//19                      \n"
-"f 21//21 20//20 2//2                        \n"
-"f 21//21 24//24 22//22                      \n"
-"f 22//22 19//19 21//21                      \n"
-"f 22//22 24//24 10//10                      \n"
-"f 23//23 26//26 24//24                      \n"
-"f 24//24 21//21 23//23                      \n"
-"f 25//25 23//23 4//4                        \n"
-"f 25//25 28//28 26//26                      \n"
-"f 26//26 23//23 25//25                      \n"
-"f 26//26 28//28 12//12                      \n"
-"f 27//27 30//30 28//28                      \n"
-"f 28//28 25//25 27//27                      \n"
-"f 29//29 27//27 6//6                        \n"
-"f 29//29 32//32 30//30                      \n"
-"f 30//30 27//27 29//29                      \n"
-"f 30//30 32//32 14//14                      \n"
-"f 31//31 34//34 32//32                      \n"
-"f 32//32 29//29 31//31                      \n"
-"f 33//33 19//19 34//34                      \n"
-"f 33//33 31//31 8//8                        \n"
-"f 34//34 19//19 16//16                      \n"
-"f 34//34 31//31 33//33                      \n"
-"                                            \n";
+static const char* capsuleOBJ = "\
+v 0.82165808 -0.82165808 -1.0579772e-18\nv 0.82165808 -0.58100000 0.58100000\n\
+v 0.82165808 8.7595780e-17 0.82165808\nv 0.82165808 0.58100000 0.58100000\n\
+v 0.82165808 0.82165808 9.9566116e-17\nv 0.82165808 0.58100000 -0.58100000\n\
+v 0.82165808 2.8884397e-16 -0.82165808\nv 0.82165808 -0.58100000 -0.58100000\n\
+v -0.82165808 -0.82165808 -1.0579772e-18\nv -0.82165808 -0.58100000 0.58100000\n\
+v -0.82165808 -1.3028313e-17 0.82165808\nv -0.82165808 0.58100000 0.58100000\n\
+v -0.82165808 0.82165808 9.9566116e-17\nv -0.82165808 0.58100000 -0.58100000\n\
+v -0.82165808 1.8821987e-16 -0.82165808\nv -0.82165808 -0.58100000 -0.58100000\n\
+v 1.16200000 1.5874776e-16 -1.0579772e-18\nv -1.16200000 1.6443801e-17 -1.0579772e-18\n\
+v -9.1030792e-3 -1.15822938 -1.0579772e-18\nv 9.1030792e-3 -1.15822938 -1.0579772e-18\n\
+v 9.1030792e-3 -0.81899185 0.81899185\nv -9.1030792e-3 -0.81899185 0.81899185\n\
+v 9.1030792e-3 1.7232088e-17 1.15822938\nv -9.1030792e-3 1.6117282e-17 1.15822938\n\
+v 9.1030792e-3 0.81899185 0.81899185\nv -9.1030792e-3 0.81899185 0.81899185\n\
+v 9.1030792e-3 1.15822938 1.4078421e-16\nv -9.1030792e-3 1.15822938 1.4078421e-16\n\
+v 9.1030792e-3 0.81899185 -0.81899185\nv -9.1030792e-3 0.81899185 -0.81899185\n\
+v 9.1030792e-3 3.0091647e-16 -1.15822938\nv -9.1030792e-3 2.9980166e-16 -1.15822938\n\
+v 9.1030792e-3 -0.81899185 -0.81899185\nv -9.1030792e-3 -0.81899185 -0.81899185\n\
+vn 0.71524683 -0.69887193 -2.5012597e-16\nvn 0.61185516 -0.55930013 0.55930013\n\
+vn 0.71524683 0.0000000e+0 0.69887193\nvn 0.61185516 0.55930013 0.55930013\n\
+vn 0.71524683 0.69887193 1.5632873e-17\nvn 0.61185516 0.55930013 -0.55930013\n\
+vn 0.71524683 6.2531494e-17 -0.69887193\nvn 0.61185516 -0.55930013 -0.55930013\n\
+vn -0.71524683 -0.69887193 -2.5012597e-16\nvn -0.61185516 -0.55930013 0.55930013\n\
+vn -0.71524683 0.0000000e+0 0.69887193\nvn -0.61185516 0.55930013 0.55930013\n\
+vn -0.71524683 0.69887193 4.6898620e-17\nvn -0.61185516 0.55930013 -0.55930013\n\
+vn -0.71524683 4.6898620e-17 -0.69887193\nvn -0.61185516 -0.55930013 -0.55930013\n\
+vn 1.00000000 1.5208752e-17 -2.6615316e-17\nvn -1.00000000 -1.5208752e-17 2.2813128e-17\n\
+vn -0.19614758 -0.98057439 -2.2848712e-16\nvn 0.26047011 -0.96548191 -2.4273177e-16\n\
+vn 0.13072302 -0.70103905 0.70103905\nvn -0.19614758 -0.69337080 0.69337080\n\
+vn 0.22349711 5.9825845e-2 0.97286685\nvn -0.22349711 -5.9825845e-2 0.97286685\n\
+vn 0.15641931 0.75510180 0.63667438\nvn -0.15641931 0.63667438 0.75510180\n\
+vn 0.22349711 0.97286685 -5.9825845e-2\nvn -0.22349711 0.97286685 5.9825845e-2\n\
+vn 0.15641931 0.63667438 -0.75510180\nvn -0.15641931 0.75510180 -0.63667438\n\
+vn 0.22349711 -5.9825845e-2 -0.97286685\nvn -0.22349711 5.9825845e-2 -0.97286685\n\
+vn 0.15641931 -0.75510180 -0.63667438\nvn -0.15641931 -0.63667438 -0.75510180\n\
+f 1//1 17//17 2//2\nf 1//1 20//20 8//8\nf 2//2 17//17 3//3\nf 2//2 20//20 1//1\n\
+f 2//2 23//23 21//21\nf 3//3 17//17 4//4\nf 3//3 23//23 2//2\nf 4//4 17//17 5//5\n\
+f 4//4 23//23 3//3\nf 4//4 27//27 25//25\nf 5//5 17//17 6//6\nf 5//5 27//27 4//4\n\
+f 6//6 17//17 7//7\nf 6//6 27//27 5//5\nf 6//6 31//31 29//29\nf 7//7 17//17 8//8\n\
+f 7//7 31//31 6//6\nf 8//8 17//17 1//1\nf 8//8 20//20 33//33\nf 8//8 31//31 7//7\n\
+f 9//9 18//18 16//16\nf 9//9 19//19 10//10\nf 10//10 18//18 9//9\nf 10//10 19//19 22//22\n\
+f 10//10 24//24 11//11\nf 11//11 18//18 10//10\nf 11//11 24//24 12//12\nf 12//12 18//18 11//11\n\
+f 12//12 24//24 26//26\nf 12//12 28//28 13//13\nf 13//13 18//18 12//12\nf 13//13 28//28 14//14\n\
+f 14//14 18//18 13//13\nf 14//14 28//28 30//30\nf 14//14 32//32 15//15\nf 15//15 18//18 14//14\n\
+f 15//15 32//32 16//16\nf 16//16 18//18 15//15\nf 16//16 19//19 9//9\nf 16//16 32//32 34//34\n\
+f 19//19 33//33 20//20\nf 20//20 21//21 19//19\nf 21//21 20//20 2//2\nf 21//21 24//24 22//22\n\
+f 22//22 19//19 21//21\nf 22//22 24//24 10//10\nf 23//23 26//26 24//24\nf 24//24 21//21 23//23\n\
+f 25//25 23//23 4//4\nf 25//25 28//28 26//26\nf 26//26 23//23 25//25\nf 26//26 28//28 12//12\n\
+f 27//27 30//30 28//28\nf 28//28 25//25 27//27\nf 29//29 27//27 6//6\nf 29//29 32//32 30//30\n\
+f 30//30 27//27 29//29\nf 30//30 32//32 14//14\nf 31//31 34//34 32//32\nf 32//32 29//29 31//31\n\
+f 33//33 19//19 34//34\nf 33//33 31//31 8//8\nf 34//34 19//19 16//16\nf 34//34 31//31 33//33";
 
 #undef TINYOBJ_LOADER_C_IMPLEMENTATION
 #include "external/tinyobj_loader_c.h"      // OBJ/MTL file formats loading
@@ -2710,7 +2908,7 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
 
     settings->sunLightConeAngle = ArgFloat(argc, argv, "sunLightConeAngle", 0.2f);
     settings->sunLightStrength = ArgFloat(argc, argv, "sunLightStrength", 0.25f);
-    settings->sunAzimuth = ArgFloat(argc, argv, "sunAzimuth", PIf / 4.0f);
+    settings->sunAzimuth = ArgFloat(argc, argv, "sunAzimuth", PI / 4.0f);
     settings->sunAltitude = ArgFloat(argc, argv, "sunAltitude", 0.8f);
     settings->sunColor = ArgColor(argc, argv, "sunColor", (Color){ 253, 255, 232 });
 
@@ -2789,8 +2987,8 @@ static inline void ScrubberSettingsRecomputeLimits(ScrubberSettings* settings, C
     settings->timeLimit = 0.0f;
     for (int i = 0; i < characterData->count; i++)
     {
-        settings->frameLimit = max(settings->frameLimit, characterData->bvhData[i].frameCount - 1);
-        settings->timeLimit = maxf(settings->timeLimit, (characterData->bvhData[i].frameCount - 1) * characterData->bvhData[i].frameTime);
+        settings->frameLimit = MaxInt(settings->frameLimit, characterData->bvhData[i].frameCount - 1);
+        settings->timeLimit = Max(settings->timeLimit, (characterData->bvhData[i].frameCount - 1) * characterData->bvhData[i].frameTime);
     }
 }
 
@@ -2800,7 +2998,7 @@ static inline void ScrubberSettingsInitMaxs(ScrubberSettings* settings, Characte
 
     settings->frameMax = characterData->bvhData[characterData->active].frameCount - 1;
     settings->frameMaxSelect = settings->frameMax;
-    settings->timeMax = (characterData->bvhData[characterData->active].frameCount - 1) * characterData->bvhData[characterData->active].frameTime;
+    settings->timeMax = settings->frameMax * characterData->bvhData[characterData->active].frameTime;
 
     settings->frameMin = 0;
     settings->frameMinSelect = settings->frameMin;
@@ -2811,15 +3009,15 @@ static inline void ScrubberSettingsClamp(ScrubberSettings* settings, CharacterDa
 {
     if (characterData->count == 0) { return; }
 
-    settings->frameMax = clamp(settings->frameMax, 0, characterData->bvhData[characterData->active].frameCount - 1);
+    settings->frameMax = ClampInt(settings->frameMax, 0, settings->frameLimit);
     settings->frameMaxSelect = settings->frameMax;
-    settings->timeMax = clampf(settings->timeMax, 0.0f, (characterData->bvhData[characterData->active].frameCount - 1) * characterData->bvhData[characterData->active].frameTime);
+    settings->timeMax = settings->frameMax * characterData->bvhData[characterData->active].frameTime;
 
-    settings->frameMin = clamp(settings->frameMin, 0, settings->frameMax);
+    settings->frameMin = ClampInt(settings->frameMin, 0, settings->frameMax);
     settings->frameMinSelect = settings->frameMin;
-    settings->timeMin = clampf(settings->timeMin, 0.0f, settings->timeMax);
+    settings->timeMin = settings->frameMin * characterData->bvhData[characterData->active].frameTime;
 
-    settings->playTime = clampf(settings->playTime, settings->timeMin, settings->timeMax);
+    settings->playTime = Clamp(settings->playTime, settings->timeMin, settings->timeMax);
 }
 
 //--------------------------------------
@@ -2947,7 +3145,7 @@ static inline void GuiRenderSettings(RenderSettings* settings, CapsuleData* caps
         "Sun Softness",
         TextFormat("%5.2f", settings->sunLightConeAngle),
         &settings->sunLightConeAngle,
-        0.02f, PIf / 4.0f))
+        0.02f, PI / 4.0f))
     {
         CapsuleDataUpdateShadowLookupTable(capsuleData, settings->sunLightConeAngle);
     }
@@ -2978,14 +3176,14 @@ static inline void GuiRenderSettings(RenderSettings* settings, CapsuleData* caps
         "Sun Azimuth",
         TextFormat("%5.2f", settings->sunAzimuth),
         &settings->sunAzimuth,
-        -PIf, PIf);
+        -PI, PI);
 
     GuiSliderBar(
         (Rectangle){ screenWidth - 160, 230, 100, 20 },
         "Sun Altitude",
         TextFormat("%5.2f", settings->sunAltitude),
         &settings->sunAltitude,
-        0.0f, 0.49f * PIf);
+        0.0f, 0.49f * PI);
 
     GuiCheckBox((Rectangle){ screenWidth - 250, 260, 20, 20 }, "Draw Origin", &settings->drawOrigin);
     GuiCheckBox((Rectangle){ screenWidth - 130, 260, 20, 20 }, "Draw Grid", &settings->drawGrid);
@@ -3009,7 +3207,7 @@ static inline void GuiCharacterData(
     int argc,
     char** argv)
 {
-    GuiGroupBox((Rectangle){ 20, 230, 190, 340 }, "Characters");
+    GuiGroupBox((Rectangle){ 20, 230, 190, (CHARACTERS_MAX - 1) * 30 + 160 }, "Characters");
 
 #if !defined(PLATFORM_WEB)
     if (GuiButton((Rectangle){ 30, 240, 110, 20 }, "Open"))
@@ -3043,7 +3241,7 @@ static inline void GuiCharacterData(
         bool bvhSelected = i == characterData->active;
         GuiToggle((Rectangle){ 30, 270 + i * 30, 140, 20 }, bvhNameShort, &bvhSelected);
 
-        if (bvhSelected)
+        if (bvhSelected && characterData->active != i)
         {
             characterData->active = i;
             ScrubberSettingsClamp(scrubberSettings, characterData);
@@ -3068,34 +3266,34 @@ static inline void GuiCharacterData(
     }
 
     bool scaleM = characterData->scales[characterData->active] == 1.0f;
-    GuiToggle((Rectangle){ 30, 300 + CHARACTERS_MAX * 30, 30, 20 }, "m", &scaleM);
+    GuiToggle((Rectangle){ 30, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "m", &scaleM);
     if (scaleM) { characterData->scales[characterData->active] = 1.0f; }
 
     bool scaleCM = characterData->scales[characterData->active] == 0.01f;
-    GuiToggle((Rectangle){ 65, 300 + CHARACTERS_MAX * 30, 30, 20 }, "cm", &scaleCM);
+    GuiToggle((Rectangle){ 65, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "cm", &scaleCM);
     if (scaleCM) { characterData->scales[characterData->active] = 0.01f; }
 
     bool scaleInches = characterData->scales[characterData->active] == 0.0254f;
-    GuiToggle((Rectangle){ 100, 300 + CHARACTERS_MAX * 30, 30, 20 }, "inch", &scaleInches);
+    GuiToggle((Rectangle){ 100, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "inch", &scaleInches);
     if (scaleInches) { characterData->scales[characterData->active] = 0.0254f; }
 
     bool scaleFeet = characterData->scales[characterData->active] == 0.3048f;
-    GuiToggle((Rectangle){ 135, 300 + CHARACTERS_MAX * 30, 30, 20 }, "feet", &scaleFeet);
+    GuiToggle((Rectangle){ 135, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "feet", &scaleFeet);
     if (scaleFeet) { characterData->scales[characterData->active] = 0.3048f; }
 
     bool scaleAuto = characterData->scales[characterData->active] == characterData->autoScales[characterData->active];
-    GuiToggle((Rectangle){ 170, 300 + CHARACTERS_MAX * 30, 30, 20 }, "auto", &scaleAuto);
+    GuiToggle((Rectangle){ 170, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "auto", &scaleAuto);
     if (scaleAuto) { characterData->scales[characterData->active] = characterData->autoScales[characterData->active]; }
 
     GuiSliderBar(
-        (Rectangle){ 70, 330 + CHARACTERS_MAX * 30, 100, 20 },
+        (Rectangle){ 70, 330 + (CHARACTERS_MAX - 1) * 30, 100, 20 },
         "Radius",
         TextFormat("%5.2f", characterData->radii[characterData->active]),
         &characterData->radii[characterData->active],
         0.01f, 0.1f);
 
     GuiSliderBar(
-        (Rectangle){ 70, 360 + CHARACTERS_MAX * 30, 100, 20 },
+        (Rectangle){ 70, 360 + (CHARACTERS_MAX - 1) * 30, 100, 20 },
         "Opacity",
         TextFormat("%5.2f", characterData->opacities[characterData->active]),
         &characterData->opacities[characterData->active],
@@ -3135,7 +3333,7 @@ static inline void GuiScrubberSettings(
     GuiToggle((Rectangle){ screenWidth / 2 + 200, screenHeight - 80, 30, 20 }, "4x", &speed4x); if (speed4x) { settings->playSpeed = 4.0f; }
     GuiSliderBar((Rectangle){ screenWidth / 2 + 240, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", settings->playSpeed), &settings->playSpeed, 0.0f, 4.0f);
 
-    int frame = clamp((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
+    int frame = ClampInt((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
 
     if (GuiValueBox(
         (Rectangle){ 100, screenHeight - 80, 50, 20 },
@@ -3180,12 +3378,12 @@ static inline void GuiScrubberSettings(
     {
         if (settings->frameSnap)
         {
-            frame = clamp((int)(frameFloat + 0.5f), settings->frameMin, settings->frameMax);
-            settings->playTime = clampf(frame * frameTime, settings->timeMin, settings->timeMax);
+            frame = ClampInt((int)(frameFloat + 0.5f), settings->frameMin, settings->frameMax);
+            settings->playTime = Clamp(frame * frameTime, settings->timeMin, settings->timeMax);
         }
         else
         {
-            settings->playTime = clampf(frameFloat * frameTime, settings->timeMin, settings->timeMax);
+            settings->playTime = Clamp(frameFloat * frameTime, settings->timeMin, settings->timeMax);
         }
     }
 }
@@ -3237,22 +3435,13 @@ static void ApplicationUpdate(void* voidApplicationState)
             char fileNameToLoad[512];
             snprintf(fileNameToLoad, 512, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
 
-            int prevBvhCount = app->characterData.count;
-
             if (CharacterDataLoadFromFile(&app->characterData, fileNameToLoad, app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
 
                 CapsuleDataUpdateForCharacters(&app->capsuleData, &app->characterData);
                 ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
-                if (prevBvhCount == 0)
-                {
-                    ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
-                }
-                else
-                {
-                    ScrubberSettingsClamp(&app->scrubberSettings, &app->characterData);
-                }
+                ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
                 
                 char windowTitle[512];
                 snprintf(windowTitle, 512, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
@@ -3289,15 +3478,7 @@ static void ApplicationUpdate(void* voidApplicationState)
         {
             CapsuleDataUpdateForCharacters(&app->capsuleData, &app->characterData);
             ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
-
-            if (prevBvhCount == 0)
-            {
-                ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
-            }
-            else
-            {
-                ScrubberSettingsClamp(&app->scrubberSettings, &app->characterData);
-            }
+            ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
 
             char windowTitle[512];
             snprintf(windowTitle, 512, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
@@ -3311,6 +3492,8 @@ static void ApplicationUpdate(void* voidApplicationState)
     {
         app->renderSettings.drawUI = !app->renderSettings.drawUI;
     }
+
+    PROFILE_BEGIN(Update);
 
     // Tick time forward
 
@@ -3400,9 +3583,18 @@ static void ApplicationUpdate(void* voidApplicationState)
             !app->renderSettings.drawEndSites);
     }
 
+    PROFILE_END(Update);
+
     // Render
 
+    Frustum frustum = FrustumFromCameraMatrices(
+        GetCameraProjectionMatrix(&app->camera.cam3d, app->screenHeight / app->screenWidth),
+        GetCameraViewMatrix(&app->camera.cam3d));
+
     BeginDrawing();
+
+    PROFILE_BEGIN(Rendering);
+
     ClearBackground(app->renderSettings.backgroundColor);
 
     BeginMode3D(app->camera.cam3d);
@@ -3438,6 +3630,8 @@ static void ApplicationUpdate(void* voidApplicationState)
     
     // Draw Ground
 
+    PROFILE_BEGIN(RenderingGround);
+
     if (app->renderSettings.drawChecker)
     {
         int groundIsCapsule = 0;
@@ -3455,22 +3649,37 @@ static void ApplicationUpdate(void* voidApplicationState)
                     -0.001f,
                     (((float)j / 10) - 0.5f) * 20.0f,
                 };
+                
+                if (!FrustumContainsSphere(frustum, groundSegmentPosition, sqrtf(2.0f)))
+                {
+                    continue;
+                }
 
+                PROFILE_BEGIN(RenderingGroundSegment);
+                
                 app->capsuleData.aoCapsuleCount = 0;
                 app->capsuleData.shadowCapsuleCount = 0;
 
+                PROFILE_BEGIN(RenderingGroundSegmentAO);
+                
                 if (app->renderSettings.drawCapsules && app->renderSettings.drawAO)
-                {
+                {  
                     CapsuleDataUpdateAOCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition);
                 }
+
+                PROFILE_END(RenderingGroundSegmentAO);
+
+                PROFILE_BEGIN(RenderingGroundSegmentShadow);
 
                 if (app->renderSettings.drawCapsules && app->renderSettings.drawShadows)
                 {
                     CapsuleDataUpdateShadowCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition, sunLightDir, app->renderSettings.sunLightConeAngle);
                 }
 
-                int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
-                int shadowCapsuleCount = min(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
+                PROFILE_END(RenderingGroundSegmentShadow);
+
+                int aoCapsuleCount = MinInt(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
+                int shadowCapsuleCount = MinInt(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
 
                 SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
                 SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
@@ -3483,11 +3692,17 @@ static void ApplicationUpdate(void* voidApplicationState)
                 SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
 
                 DrawModel(app->groundPlaneModel, groundSegmentPosition, 1.0f, WHITE);
+
+                PROFILE_END(RenderingGroundSegment);
             }
         }
     }
 
+    PROFILE_END(RenderingGround);
+
     // Draw Capsules
+
+    PROFILE_BEGIN(RenderingCapsules);
 
     if (app->renderSettings.drawCapsules)
     {
@@ -3510,30 +3725,50 @@ static void ApplicationUpdate(void* voidApplicationState)
         {
             int j = app->capsuleData.capsuleSort[i].index;
 
+            Vector3 capsulePosition = app->capsuleData.capsulePositions[j];
+            float capsuleHalfLength = app->capsuleData.capsuleHalfLengths[j];
+            float capsuleRadius = app->capsuleData.capsuleRadii[j];
+
+            if (!FrustumContainsSphere(frustum, capsulePosition, capsuleHalfLength + capsuleRadius))
+            {
+                continue;
+            }
+          
+            PROFILE_BEGIN(RenderingCapsulesCapsule);
+
             if (app->capsuleData.capsuleOpacities[j] < 1.0f)
             {
                 rlDrawRenderBatchActive();
                 rlDisableDepthMask();
             }
 
-            Vector3 capsuleStart = CapsuleStart(app->capsuleData.capsulePositions[j], app->capsuleData.capsuleRotations[j], app->capsuleData.capsuleHalfLengths[j]);
-            Vector3 capsuleVector = CapsuleVector(app->capsuleData.capsulePositions[j], app->capsuleData.capsuleRotations[j], app->capsuleData.capsuleHalfLengths[j]);
-
             app->capsuleData.aoCapsuleCount = 0;
             app->capsuleData.shadowCapsuleCount = 0;
+
+            PROFILE_BEGIN(RenderingCapsulesCapsuleAO);
 
             if (app->renderSettings.drawAO)
             {
                 CapsuleDataUpdateAOCapsulesForCapsule(&app->capsuleData, j);
             }
+            
+            PROFILE_END(RenderingCapsulesCapsuleAO);
+
+            PROFILE_BEGIN(RenderingCapsulesCapsuleShadow);
 
             if (app->renderSettings.drawShadows)
             {
                 CapsuleDataUpdateShadowCapsulesForCapsule(&app->capsuleData, j, sunLightDir, app->renderSettings.sunLightConeAngle);
             }
 
-            int shadowCapsuleCount = min(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-            int aoCapsuleCount = min(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
+            PROFILE_END(RenderingCapsulesCapsuleShadow);
+
+            int shadowCapsuleCount = MinInt(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
+            int aoCapsuleCount = MinInt(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
+
+            Quaternion capsuleRotation = app->capsuleData.capsuleRotations[j];
+            Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
+            Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
 
             SetShaderValue(app->shader, app->uniforms.objectColor, &app->capsuleData.capsuleColors[j], SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.objectOpacity, &app->capsuleData.capsuleOpacities[j], SHADER_UNIFORM_FLOAT);
@@ -3562,8 +3797,12 @@ static void ApplicationUpdate(void* voidApplicationState)
                 rlDrawRenderBatchActive();
                 rlEnableDepthMask();
             }
+
+            PROFILE_END(RenderingCapsulesCapsule);
         }
     }
+
+    PROFILE_END(RenderingCapsules);
 
     // Grid
 
@@ -3627,7 +3866,11 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     EndMode3D();
 
+    PROFILE_END(Rendering);
+
     // Draw UI
+
+    PROFILE_BEGIN(Gui);
 
     if (app->renderSettings.drawUI)
     {
@@ -3674,12 +3917,27 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         GuiScrubberSettings(&app->scrubberSettings, &app->characterData, app->screenWidth, app->screenHeight);
 
-        if (app->fileDialogState.windowActive) { GuiUnlock(); }
-
+        // Draw UI
+        
         // File Dialog
 
+        if (app->fileDialogState.windowActive) { GuiUnlock(); }
+        
         GuiWindowFileDialog(&app->fileDialogState);
     }
+
+    PROFILE_END(Gui);
+
+#if defined(ENABLE_PROFILE)
+    ProfileTickersUpdate(&tickers);
+    
+    for (int i = 0; i < g_profile_records.num; i++)
+    {
+        GuiLabel((Rectangle){ 260, 10 + (float)i * 20, 200, 20 }, g_profile_records.records[i]->name);
+        GuiLabel((Rectangle){ 450, 10 + (float)i * 20, 100, 20 }, TextFormat("%6.1f us", tickers.times[i]));
+        GuiLabel((Rectangle){ 550, 10 + (float)i * 20, 100, 20 }, TextFormat("%i calls", tickers.frameIterations[i]));
+    }
+#endif
 
     // Done
 
@@ -3696,7 +3954,12 @@ int main(int argc, char** argv)
 
     app.argc = argc;
     app.argv = argv;
-
+    
+#if defined(ENABLE_PROFILE)
+    PROFILE_INIT()
+    ProfileTickersInit(&tickers);
+#endif
+    
     // Init Window
 
     app.screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
