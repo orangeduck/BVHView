@@ -1,3 +1,25 @@
+/*******************************************************************************************
+*
+*    BVHView - A simple BVH animation viewer written using raylib
+*
+*  This is a simple viewer for the .bvh animation file format made using raylib. For more
+*  info on the motivation behind it and information on features and documentation please 
+*  see TODO.
+*
+*  The program itself essentially contains the following components:
+*
+*     - A parser for the BVH file format into some basic data structure
+*     - Functions for sampling bone transforms at a given frame into a buffer of skeleton 
+        bone transforms.
+*     - Functions for constructing a set of Capsules representing these bones from BVH data 
+*       and skeleton transform data.
+*     - A (relatively) efficient and high quality method of rendering capsules that includes 
+*       nice lighting and soft shadows.
+*
+*  Coding style is roughly meant to follow the rest of raylib.
+*
+*******************************************************************************************/
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,23 +41,41 @@
 static int errno;
 #endif
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Profiling
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 #define ENABLE_PROFILE
+
 #if defined(ENABLE_PROFILE)
 
+// Profiling only available on Windows
 #include <profileapi.h>
 
 enum
 {
+    // Max number of profile records (profiled code locations) 
     PROFILE_RECORD_MAX = 512,
-    PROFILE_RECORD_BUFFER_MAX = 128,
+    
+    // Maximum number of timer samples to record in buffer
+    PROFILE_RECORD_SAMPLE_MAX = 128,
 };
 
-struct ProfileRecord;
-typedef struct ProfileRecord ProfileRecord;
+// Record for a profiled code location. Contains a cyclic buffer of start and end times.
+typedef struct 
+{
+    const char* name;
+    uint32_t idx;
+    uint32_t num;
+    
+    struct {
+        LARGE_INTEGER start;
+        LARGE_INTEGER end;
+    } samples[PROFILE_RECORD_SAMPLE_MAX];
+    
+} ProfileRecord;
+
+// Set of all profiled code locations
 typedef struct
 {
     uint32_t num;
@@ -44,128 +84,115 @@ typedef struct
     
 } ProfileRecordData;
 
-static void ProfileRecordDataInit(ProfileRecordData* data)
+// Global variable storing all the profile record data
+static ProfileRecordData globalProfileRecords;
+
+// Init the Profile Record Data. Must be called at program start
+static void ProfileRecordDataInit()
 {
-    data->num = 0;
-    QueryPerformanceFrequency(&data->freq);
-    memset(data->records, 0, sizeof(ProfileRecord*) * PROFILE_RECORD_MAX);
+    globalProfileRecords.num = 0;
+    QueryPerformanceFrequency(&globalProfileRecords.freq);
+    memset(globalProfileRecords.records, 0, sizeof(ProfileRecord*) * PROFILE_RECORD_MAX);
 }
 
-static ProfileRecordData g_profile_records;
-
-struct ProfileRecord
+// If uninitialized, then initialize the profile record and store the start time
+static inline void ProfileRecordBegin(ProfileRecord* record, const char* name)
 {
-    const char* name;
-    uint32_t num;
-    bool registered;
-    
-    struct {
-        LARGE_INTEGER start;
-        LARGE_INTEGER end;
-    } buffer[PROFILE_RECORD_BUFFER_MAX];
-};
-
-static inline void ProfileRecordInit(ProfileRecord* record, const char* name)
-{
-    if (!record->registered)
+    if (!record->name && globalProfileRecords.num < PROFILE_RECORD_MAX)
     {
-        record->registered = true;
         record->name = name;
+        record->idx = 0;
         record->num = 0;
-        g_profile_records.records[g_profile_records.num] = record;
-        g_profile_records.num++;
+        globalProfileRecords.records[globalProfileRecords.num] = record;
+        globalProfileRecords.num++;
     }
+  
+    QueryPerformanceCounter(&record->samples[record->idx].start);
 }
 
-static inline void ProfileRecordBegin(ProfileRecord* record)
-{
-    if (record->num < PROFILE_RECORD_BUFFER_MAX)
-    {
-        QueryPerformanceCounter(&record->buffer[record->num].start);
-    }
-}
-
+// Store the end time and increment the 
 static inline void ProfileRecordEnd(ProfileRecord* record)
 {
-    if (record->num < PROFILE_RECORD_BUFFER_MAX)
-    {
-        QueryPerformanceCounter(&record->buffer[record->num].end);
-        record->num++;
-    }
+    QueryPerformanceCounter(&record->samples[record->idx].end);
+    record->idx = (record->idx + 1) % PROFILE_RECORD_SAMPLE_MAX;
+    record->num++;
 }
 
-// Keeps Rolling Average of Profile Records durations in microseconds
-
+// Keeps Rolling Average of Profile Record durations in microseconds
 typedef struct
 {
     uint64_t unitScale; 
     double alpha;
-    uint64_t frameIterations[PROFILE_RECORD_MAX];
+    uint32_t samples[PROFILE_RECORD_MAX];
     uint64_t iterations[PROFILE_RECORD_MAX];
     double averages[PROFILE_RECORD_MAX];
     double times[PROFILE_RECORD_MAX];
+    
 } ProfileTickers;
 
-static inline void ProfileTickersInit(ProfileTickers* tickers)
+// Global profile tickers data
+static ProfileTickers globalProfileTickers;
+
+// Initialize ticker data
+static inline void ProfileTickersInit()
 {
-    tickers->unitScale = 1000000; // Microseconds
-    tickers->alpha = 0.9f;
-    memset(tickers->frameIterations, 0, sizeof(uint64_t) * PROFILE_RECORD_MAX);
-    memset(tickers->iterations, 0, sizeof(uint64_t) * PROFILE_RECORD_MAX);
-    memset(tickers->averages, 0, sizeof(double) * PROFILE_RECORD_MAX);
-    memset(tickers->times, 0, sizeof(double) * PROFILE_RECORD_MAX);
+    globalProfileTickers.unitScale = 1000000; // Microseconds
+    globalProfileTickers.alpha = 0.9f;
+    memset(globalProfileTickers.samples, 0, sizeof(uint32_t) * PROFILE_RECORD_MAX);
+    memset(globalProfileTickers.iterations, 0, sizeof(uint64_t) * PROFILE_RECORD_MAX);
+    memset(globalProfileTickers.averages, 0, sizeof(double) * PROFILE_RECORD_MAX);
+    memset(globalProfileTickers.times, 0, sizeof(double) * PROFILE_RECORD_MAX);
 }
 
-static inline void ProfileTickersUpdate(ProfileTickers* tickers)
+// Update tickers and compute the rolling average of the duration
+static inline void ProfileTickersUpdate()
 {
-    for (int i = 0; i < g_profile_records.num; i++)
+    for (int i = 0; i < globalProfileRecords.num; i++)
     {
-        ProfileRecord* record = g_profile_records.records[i];
+        ProfileRecord* record = globalProfileRecords.records[i];
         
         if (record && record->name)
         {
-            tickers->frameIterations[i] = 0;
+            globalProfileTickers.samples[i] = record->num;
             
-            for (int j = 0; j < record->num; j++)
-            {                    
+            int bufferedSampleNum = record->num < PROFILE_RECORD_SAMPLE_MAX ? record->num : PROFILE_RECORD_SAMPLE_MAX;
+            
+            for (int j = 0; j < bufferedSampleNum; j++)
+            {
                 double time = (double)((
-                    record->buffer[j].end.QuadPart - 
-                    record->buffer[j].start.QuadPart) * tickers->unitScale) / 
-                        (double)g_profile_records.freq.QuadPart;
+                    record->samples[j].end.QuadPart - 
+                    record->samples[j].start.QuadPart) * globalProfileTickers.unitScale) / 
+                        (double)globalProfileRecords.freq.QuadPart;
                     
-                tickers->iterations[i]++;
-                tickers->frameIterations[i]++;
-                tickers->averages[i] = tickers->alpha * tickers->averages[i] + (1.0 - tickers->alpha) * time;
-                tickers->times[i] = tickers->averages[i] / (1.0 - pow(tickers->alpha, tickers->iterations[i]));
+                globalProfileTickers.iterations[i]++;
+                globalProfileTickers.averages[i] = globalProfileTickers.alpha * globalProfileTickers.averages[i] + (1.0 - globalProfileTickers.alpha) * time;
+                globalProfileTickers.times[i] = globalProfileTickers.averages[i] / (1.0 - pow(globalProfileTickers.alpha, globalProfileTickers.iterations[i]));
             }
             
-            // Flush Buffer
+            // Flush Samples
+            record->idx = 0;
             record->num = 0;
         }
     }
 }
 
-#define PROFILE_INIT() ProfileRecordDataInit(&g_profile_records);
-
-#define PROFILE_BEGIN(NAME) \
-    static ProfileRecord __PROFILE_RECORD_##NAME = { 0 }; \
-    ProfileRecordInit(&__PROFILE_RECORD_##NAME, #NAME); \
-    ProfileRecordBegin(&__PROFILE_RECORD_##NAME);
-    
-#define PROFILE_END(NAME) \
-    ProfileRecordEnd(&__PROFILE_RECORD_##NAME);
-
-static ProfileTickers tickers;
+#define PROFILE_INIT() ProfileRecordDataInit(); ProfileTickersInit();
+#define PROFILE_BEGIN(NAME) static ProfileRecord __PROFILE_RECORD_##NAME; ProfileRecordBegin(&__PROFILE_RECORD_##NAME, #NAME);
+#define PROFILE_END(NAME) ProfileRecordEnd(&__PROFILE_RECORD_##NAME);
+#define PROFILE_UPDATE() ProfileTickersUpdate()
 
 #else
+
 #define PROFILE_INIT() 
 #define PROFILE_BEGIN(NAME) 
 #define PROFILE_END(NAME) 
+#define PROFILE_UPDATE()
+
 #endif
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Additional Raylib Functions
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 static inline float Max(float x, float y)
 {
@@ -202,26 +229,6 @@ static inline int MinInt(int x, int y)
     return x < y ? x : y;
 }
 
-static inline Vector3 Vector3Hermite(Vector3 p0, Vector3 p1, Vector3 v0, Vector3 v1, float alpha)
-{
-    float x = alpha;
-    float w0 = 2*x*x*x - 3*x*x + 1;
-    float w1 = 3*x*x - 2*x*x*x;
-    float w2 = x*x*x - 2*x*x + x;
-    float w3 = x*x*x - x*x;
-
-    return Vector3Add(
-        Vector3Add(Vector3Scale(p0, w0), Vector3Scale(p1, w1)),
-        Vector3Add(Vector3Scale(v0, w2), Vector3Scale(v1, w3)));
-}
-
-static inline Vector3 Vector3InterpolateCubic(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float alpha)
-{
-    Vector3 v1 = Vector3Scale(Vector3Add(Vector3Subtract(p1, p0), Vector3Subtract(p2, p1)), 0.5f);
-    Vector3 v2 = Vector3Scale(Vector3Add(Vector3Subtract(p2, p1), Vector3Subtract(p3, p2)), 0.5f);
-    return Vector3Hermite(p1, p2, v1, v2, alpha);
-}
-
 // This is a save version of QuaternionBetween which returns a 180 deg rotation
 // at the singularity where vectors are facing exactly in opposite directions
 static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
@@ -240,6 +247,7 @@ static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
         QuaternionNormalize(o);
 }
 
+// Puts the quaternion in the hemisphere closest to the identity
 static inline Quaternion QuaternionAbsolute(Quaternion q)
 {
     if (q.w < 0.0f)
@@ -252,6 +260,8 @@ static inline Quaternion QuaternionAbsolute(Quaternion q)
 
     return q;
 }
+
+// Quaternion exponent, log, and angle axis functions (see: https://theorangeduck.com/page/exponential-map-angle-axis-angular-velocity)
 
 static inline Quaternion QuaternionExp(Vector3 v)
 {
@@ -294,8 +304,27 @@ static inline Quaternion QuaternionFromScaledAngleAxis(Vector3 v)
     return QuaternionExp(Vector3Scale(v, 0.5f));
 }
 
-// Cubic Quaternion Interpolation
-// See: https://theorangeduck.com/page/cubic-interpolation-quaternions
+// Cubic Interpolation (see: https://theorangeduck.com/page/cubic-interpolation-quaternions)
+
+static inline Vector3 Vector3Hermite(Vector3 p0, Vector3 p1, Vector3 v0, Vector3 v1, float alpha)
+{
+    float x = alpha;
+    float w0 = 2*x*x*x - 3*x*x + 1;
+    float w1 = 3*x*x - 2*x*x*x;
+    float w2 = x*x*x - 2*x*x + x;
+    float w3 = x*x*x - x*x;
+
+    return Vector3Add(
+        Vector3Add(Vector3Scale(p0, w0), Vector3Scale(p1, w1)),
+        Vector3Add(Vector3Scale(v0, w2), Vector3Scale(v1, w3)));
+}
+
+static inline Vector3 Vector3InterpolateCubic(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float alpha)
+{
+    Vector3 v1 = Vector3Scale(Vector3Add(Vector3Subtract(p1, p0), Vector3Subtract(p2, p1)), 0.5f);
+    Vector3 v2 = Vector3Scale(Vector3Add(Vector3Subtract(p2, p1), Vector3Subtract(p3, p2)), 0.5f);
+    return Vector3Hermite(p1, p2, v1, v2, alpha);
+}
 
 static inline Quaternion QuaternionHermite(Quaternion r0, Quaternion r1, Vector3 v0, Vector3 v1, float alpha)
 {
@@ -320,6 +349,8 @@ static inline Quaternion QuaternionInterpolateCubic(Quaternion r0, Quaternion r1
     Vector3 v2 = Vector3Scale(Vector3Add(r2r1, r3r2), 0.5f);
     return QuaternionHermite(r1, r2, v1, v2, alpha);
 }
+
+// Frustum culling based off https://github.com/JeffM2501/raylibExtras
 
 typedef struct
 {
@@ -388,10 +419,11 @@ static inline bool FrustumContainsSphere(Frustum frustum, Vector3 position, floa
     return true;
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Command Line Args
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
+// Finds an argument on the command line with the given name (in the format "--argName=argValue") and returns the value as a string
 static inline char* ArgFind(int argc, char** argv, const char* name)
 {
     for (int i = 1; i < argc; i++)
@@ -409,6 +441,7 @@ static inline char* ArgFind(int argc, char** argv, const char* name)
     return NULL;
 }
 
+// Parse a float argument from the command line
 static inline float ArgFloat(int argc, char** argv, const char* name, float defaultValue)
 {
     char* value = ArgFind(argc, argv, name);
@@ -422,6 +455,7 @@ static inline float ArgFloat(int argc, char** argv, const char* name, float defa
     return defaultValue;
 }
 
+// Parse an integer argument from the command line
 static inline int ArgInt(int argc, char** argv, const char* name, int defaultValue)
 {
     char* value = ArgFind(argc, argv, name);
@@ -435,6 +469,7 @@ static inline int ArgInt(int argc, char** argv, const char* name, int defaultVal
     return defaultValue;
 }
 
+// Parse a boolean argument from the command line
 static inline int ArgBool(int argc, char** argv, const char* name, bool defaultValue)
 {
     char* value = ArgFind(argc, argv, name);
@@ -446,6 +481,7 @@ static inline int ArgBool(int argc, char** argv, const char* name, bool defaultV
     return defaultValue;
 }
 
+// Parse an enum argument from the command line
 static inline int ArgEnum(int argc, char** argv, const char* name, int optionCount, const char* options[], int defaultValue)
 {
     char* value = ArgFind(argc, argv, name);
@@ -464,6 +500,7 @@ static inline int ArgEnum(int argc, char** argv, const char* name, int optionCou
     return defaultValue;
 }
 
+// Parse a string argument from the command line
 static inline const char* ArgStr(int argc, char** argv, const char* name, const char* defaultValue)
 {
     char* value = ArgFind(argc, argv, name);
@@ -473,6 +510,7 @@ static inline const char* ArgStr(int argc, char** argv, const char* name, const 
     return value;
 }
 
+// Parse a color argument from the command line
 static inline Color ArgColor(int argc, char** argv, const char* name, Color defaultValue)
 {
     char* value = ArgFind(argc, argv, name);
@@ -489,10 +527,11 @@ static inline Color ArgColor(int argc, char** argv, const char* name, Color defa
     return defaultValue;
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Camera
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
+// Basic Orbit Camera with simple controls
 typedef struct {
 
     Camera3D cam3d;
@@ -544,133 +583,17 @@ static inline void OrbitCameraUpdate(
     camera->cam3d.position = eye;
 }
 
-//--------------------------------------
-// BVH File Data
-//--------------------------------------
-
-enum
-{
-    CHANNEL_X_POSITION = 0,
-    CHANNEL_Y_POSITION = 1,
-    CHANNEL_Z_POSITION = 2,
-    CHANNEL_X_ROTATION = 3,
-    CHANNEL_Y_ROTATION = 4,
-    CHANNEL_Z_ROTATION = 5,
-    CHANNELS_MAX = 6,
-};
-
-typedef struct
-{
-    int parent;
-    char* name;
-    Vector3 offset;
-    int channelCount;
-    char channels[CHANNELS_MAX];
-    bool endSite;
-
-} BVHJointData;
-
-static inline void BVHJointDataInit(BVHJointData* data)
-{
-    data->parent = -1;
-    data->name = NULL;
-    data->offset = (Vector3){ 0.0f, 0.0f, 0.0f };
-    data->channelCount = 0;
-    data->endSite = false;
-}
-
-static inline void BVHJointDataRename(BVHJointData* data, const char* name)
-{
-    data->name = realloc(data->name, strlen(name) + 1);
-    strcpy(data->name, name);
-}
-
-static inline void BVHJointDataFree(BVHJointData* data)
-{
-    free(data->name);
-}
-
-typedef struct
-{
-    // Hierarchy Data
-
-    int jointCount;
-    BVHJointData* joints;
-
-    // Motion Data
-
-    int frameCount;
-    int channelCount;
-    float frameTime;
-    float* motionData;
-
-    // Extra Data
-
-    char* jointNamesCombo;
-
-} BVHData;
-
-static inline void BVHDataInit(BVHData* bvh)
-{
-    bvh->jointCount = 0;
-    bvh->joints = NULL;
-    bvh->frameCount = 0;
-    bvh->channelCount = 0;
-    bvh->frameTime = 0.0f;
-    bvh->motionData = NULL;
-    bvh->jointNamesCombo = NULL;
-}
-
-static inline void BVHDataFree(BVHData* bvh)
-{
-    for (int i = 0; i < bvh->jointCount; i++)
-    {
-        BVHJointDataFree(&bvh->joints[i]);
-    }
-    free(bvh->joints);
-
-    free(bvh->motionData);
-    free(bvh->jointNamesCombo);
-}
-
-static inline int BVHDataAddJoint(BVHData* bvh)
-{
-    bvh->joints = (BVHJointData*)realloc(bvh->joints, (bvh->jointCount + 1) * sizeof(BVHJointData));
-    bvh->jointCount++;
-    BVHJointDataInit(&bvh->joints[bvh->jointCount - 1]);
-    return bvh->jointCount - 1;
-}
-
-static inline void BVHDataComputeJointNamesCombo(BVHData* bvh)
-{
-    int total_size = 0;
-    for (int i = 0; i < bvh->jointCount; i++)
-    {
-        total_size += (i > 0 ? 1 : 0) + strlen(bvh->joints[i].name);
-    }
-    total_size++;
-
-    bvh->jointNamesCombo = malloc(total_size);
-    bvh->jointNamesCombo[0] = '\0';
-    for (int i = 0; i < bvh->jointCount; i++)
-    {
-        if (i > 0)
-        {
-            strcat(bvh->jointNamesCombo, ";");
-        }
-        strcat(bvh->jointNamesCombo, bvh->joints[i].name);
-    }
-}
-
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Parser
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 enum
 {
     PARSER_ERR_MAX = 512,
 };
 
+// Simple parser that keeps track of rows, and cols in a string and so can provide
+// slightly nicer error messages.
 typedef struct {
 
     const char* filename;
@@ -694,22 +617,22 @@ static inline void ParserInit(Parser* par, const char* filename, const char* dat
 
 static inline char ParserPeek(const Parser* par)
 {
-    return *(par->data + par->offset);
+    return par->data[par->offset];
 }
 
 static inline char ParserPeekForward(const Parser* par, int steps)
 {
-    return *(par->data + par->offset + steps);
+    return par->data[par->offset + steps];
 }
 
 static inline bool ParserMatch(const Parser* par, char match)
 {
-    return match == *(par->data + par->offset);
+    return match == par->data[par->offset];
 }
 
 static inline bool ParserOneOf(const Parser* par, const char* matches)
 {
-    return strchr(matches, *(par->data + par->offset));
+    return strchr(matches, par->data[par->offset]);
 }
 
 static inline bool ParserStartsWithCaseless(const Parser* par, const char* prefix)
@@ -727,7 +650,7 @@ static inline bool ParserStartsWithCaseless(const Parser* par, const char* prefi
 
 static inline void ParserInc(Parser* par)
 {
-    if (*(par->data + par->offset) == '\n')
+    if (par->data[par->offset] == '\n')
     {
         par->row++;
         par->col = 0;
@@ -768,15 +691,113 @@ static inline char* ParserCharName(char c)
 #define ParserError(par, fmt, ...) \
     snprintf(par->err, PARSER_ERR_MAX, "%s:%i:%i: error: " fmt, par->filename, par->row, par->col, ##__VA_ARGS__)
 
-//--------------------------------------
-// BVH Parser
-//--------------------------------------
+//----------------------------------------------------------------------------------
+// BVH File Data
+//----------------------------------------------------------------------------------
 
+// Types of "channels" that are possible in the BVH format
+enum
+{
+    CHANNEL_X_POSITION = 0,
+    CHANNEL_Y_POSITION = 1,
+    CHANNEL_Z_POSITION = 2,
+    CHANNEL_X_ROTATION = 3,
+    CHANNEL_Y_ROTATION = 4,
+    CHANNEL_Z_ROTATION = 5,
+    CHANNELS_MAX = 6,
+};
+
+// Data associated with a single "joint" in the BVH format
+typedef struct
+{
+    int parent;
+    char* name;
+    Vector3 offset;
+    int channelCount;
+    char channels[CHANNELS_MAX];
+    bool endSite;
+
+} BVHJointData;
+
+static inline void BVHJointDataInit(BVHJointData* data)
+{
+    data->parent = -1;
+    data->name = NULL;
+    data->offset = (Vector3){ 0.0f, 0.0f, 0.0f };
+    data->channelCount = 0;
+    data->endSite = false;
+}
+
+static inline void BVHJointDataRename(BVHJointData* data, const char* name)
+{
+    data->name = realloc(data->name, strlen(name) + 1);
+    strcpy(data->name, name);
+}
+
+static inline void BVHJointDataFree(BVHJointData* data)
+{
+    free(data->name);
+}
+
+// Data structure matching what is present in the BVH file format
+typedef struct
+{
+    // Hierarchy Data
+
+    int jointCount;
+    BVHJointData* joints;
+
+    // Motion Data
+
+    int frameCount;
+    int channelCount;
+    float frameTime;
+    float* motionData;
+
+} BVHData;
+
+static inline void BVHDataInit(BVHData* bvh)
+{
+    bvh->jointCount = 0;
+    bvh->joints = NULL;
+    bvh->frameCount = 0;
+    bvh->channelCount = 0;
+    bvh->frameTime = 0.0f;
+    bvh->motionData = NULL;
+}
+
+static inline void BVHDataFree(BVHData* bvh)
+{
+    for (int i = 0; i < bvh->jointCount; i++)
+    {
+        BVHJointDataFree(&bvh->joints[i]);
+    }
+    free(bvh->joints);
+
+    free(bvh->motionData);
+}
+
+static inline int BVHDataAddJoint(BVHData* bvh)
+{
+    bvh->joints = (BVHJointData*)realloc(bvh->joints, (bvh->jointCount + 1) * sizeof(BVHJointData));
+    bvh->jointCount++;
+    BVHJointDataInit(&bvh->joints[bvh->jointCount - 1]);
+    return bvh->jointCount - 1;
+}
+
+//----------------------------------------------------------------------------------
+// BVH Parser
+//----------------------------------------------------------------------------------
+
+// Parse any whitespace
 static void BVHParseWhitespace(Parser* par)
 {
     while (ParserOneOf(par, " \r\t\v")) { ParserInc(par); }
 }
 
+// Parse the given string (in a non-case sensitive way). I've found that in practice
+// many BVH files don't respect case sensitivity so parsing any keywords in a non-case
+// sensitive way seems safer.
 static bool BVHParseString(Parser* par, const char* string)
 {
     if (ParserStartsWithCaseless(par, string))
@@ -791,6 +812,7 @@ static bool BVHParseString(Parser* par, const char* string)
     }
 }
 
+// Parse any whitespace followed by a newline
 static bool BVHParseNewline(Parser* par)
 {
     BVHParseWhitespace(par);
@@ -808,6 +830,7 @@ static bool BVHParseNewline(Parser* par)
     }
 }
 
+// Parse any whitespace and then an identifier for the name of a joint
 static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
 {
     BVHParseWhitespace(par);
@@ -836,6 +859,7 @@ static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
     }
 }
 
+// Parse a float value
 static bool BVHParseFloat(float* out, Parser* par)
 {
     BVHParseWhitespace(par);
@@ -856,6 +880,7 @@ static bool BVHParseFloat(float* out, Parser* par)
     }
 }
 
+// Parse an integer value
 static bool BVHParseInt(int* out, Parser* par)
 {
     BVHParseWhitespace(par);
@@ -876,6 +901,7 @@ static bool BVHParseInt(int* out, Parser* par)
     }
 }
 
+// Parse the "joint offset" part of the BVH File
 static bool BVHParseJointOffset(BVHJointData* jnt, Parser* par)
 {
     if (!BVHParseString(par, "OFFSET")) { return false; }
@@ -886,6 +912,7 @@ static bool BVHParseJointOffset(BVHJointData* jnt, Parser* par)
     return true;
 }
 
+// Parse a channel type and return it in "channel"
 static bool BVHParseChannelEnum(
     char* channel,
     Parser* par,
@@ -899,6 +926,7 @@ static bool BVHParseChannelEnum(
     return true;
 }
 
+// Parse a channel type and return it in "channel"
 static bool BVHParseChannel(char* channel, Parser* par)
 {
     BVHParseWhitespace(par);
@@ -943,6 +971,7 @@ static bool BVHParseChannel(char* channel, Parser* par)
     return false;
 }
 
+// Parse the "channels" part of the BVH file format
 static bool BVHParseJointChannels(BVHJointData* jnt, Parser* par)
 {
     if (!BVHParseString(par, "CHANNELS")) { return false; }
@@ -958,8 +987,7 @@ static bool BVHParseJointChannels(BVHJointData* jnt, Parser* par)
     return true;
 }
 
-// TODO: Support for "End site"
-
+// Parse a joint in the BVH file format
 static bool BVHParseJoints(BVHData* bvh, int parent, Parser* par)
 {
     while (ParserOneOf(par, "JEje")) // Either "JOINT" or "End Site"
@@ -998,6 +1026,7 @@ static bool BVHParseJoints(BVHData* bvh, int parent, Parser* par)
     return true;
 }
 
+// Parse the frame count
 static bool BVHParseFrames(BVHData* bvh, Parser* par)
 {
     if (!BVHParseString(par, "Frames:")) { return false; }
@@ -1006,6 +1035,7 @@ static bool BVHParseFrames(BVHData* bvh, Parser* par)
     return true;
 }
 
+// Parse the frame time
 static bool BVHParseFrameTime(BVHData* bvh, Parser* par)
 {
     if (!BVHParseString(par, "Frame Time:")) { return false; }
@@ -1015,6 +1045,7 @@ static bool BVHParseFrameTime(BVHData* bvh, Parser* par)
     return true;
 }
 
+// Parse the motion data part of the BVH file format
 static bool BVHParseMotionData(BVHData* bvh, Parser* par)
 {
     int channelCount = 0;
@@ -1039,6 +1070,7 @@ static bool BVHParseMotionData(BVHData* bvh, Parser* par)
     return true;
 }
 
+// Parse the entire BVH file format
 static bool BVHParse(BVHData* bvh, Parser* par)
 {
     // Hierarchy Data
@@ -1070,6 +1102,7 @@ static bool BVHParse(BVHData* bvh, Parser* par)
     return true;
 }
 
+// Load the given file and parse the contents as a BVH file.
 static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int errMsgSize)
 {
     // Read file Contents
@@ -1089,20 +1122,17 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
     fread(buffer, 1, length, f);
     buffer[length] = '\n';
     fclose(f);
-
-    // Create Parser
-
-    Parser par;
-    ParserInit(&par, filename, buffer);
+    
+    // Free and re-init in case we are re-using an old buffer 
+    BVHDataFree(bvh); 
+    BVHDataInit(bvh);
 
     // Parse BVH
-
-    BVHDataFree(bvh);
-    BVHDataInit(bvh);
+    Parser par;
+    ParserInit(&par, filename, buffer);
     bool result = BVHParse(bvh, &par);
 
     // Free contents and return result
-
     free(buffer);
 
     if (!result)
@@ -1113,18 +1143,16 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
     {
         errMsg[0] = '\0';
         printf("INFO: parsed '%s' successfully\n", filename);
-
-        // Compute some additional info
-        BVHDataComputeJointNamesCombo(bvh);
     }
 
     return result;
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Transform Data
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
+// Structure for containing a sampled pose as joint transforms
 typedef struct
 {
     int jointCount;
@@ -1148,6 +1176,7 @@ static inline void TransformDataInit(TransformData* data)
     data->globalRotations = NULL;
 }
 
+// Resize the transform buffer for the given BVH data
 static inline void TransformDataResize(TransformData* data, BVHData* bvh)
 {
     data->jointCount = bvh->jointCount;
@@ -1175,6 +1204,7 @@ static inline void TransformDataFree(TransformData* data)
     free(data->globalRotations);
 }
 
+// Sample joint transforms from a particular frame of a BVH file
 static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int frame, float scale)
 {
     frame = frame < 0 ? 0 : frame >= bvh->frameCount ? bvh->frameCount - 1 : frame;
@@ -1231,12 +1261,14 @@ static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int fram
     assert(offset == bvh->channelCount);
 }
 
+// Sample the nearest frame to the given time
 static void TransformDataSampleFrameNearest(TransformData* data, BVHData* bvh, float time, float scale)
 {
     int frame = ClampInt((int)(time / bvh->frameTime + 0.5f), 0, bvh->frameCount - 1);
     TransformDataSampleFrame(data, bvh, frame, scale);
 }
 
+// Perform a basic linear interpolation of the frame data in the BVH file
 static void TransformDataSampleFrameLinear(
     TransformData* data,
     TransformData* tmp0,
@@ -1259,6 +1291,7 @@ static void TransformDataSampleFrameLinear(
     }
 }
 
+// Perform a cubic interpolation of the frame data in the BVH file
 static void TransformDataSampleFrameCubic(
     TransformData* data,
     TransformData* tmp0,
@@ -1292,6 +1325,7 @@ static void TransformDataSampleFrameCubic(
     }
 }
 
+// Compute format kinematics on the transform buffer
 static void TransformDataForwardKinematics(TransformData* data)
 {
     for (int i = 0; i < data->jointCount; i++)
@@ -1312,15 +1346,17 @@ static void TransformDataForwardKinematics(TransformData* data)
     }
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Character Data
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
+// Maximum number of characters to allow in the scene
 enum
 {
     CHARACTERS_MAX = 6,
 };
 
+// All the data required for all of the characters we want to have in the scene
 typedef struct {
 
     int count;
@@ -1341,10 +1377,13 @@ typedef struct {
     TransformData xformTmp2[CHARACTERS_MAX];
     TransformData xformTmp3[CHARACTERS_MAX];
 
+    char* jointNamesCombo[CHARACTERS_MAX];
+
     bool colorPickerActive;
 
 } CharacterData;
 
+// Initializes all the CharacterData to a safe state
 static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
 {
     data->count = 0;
@@ -1371,6 +1410,7 @@ static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
         TransformDataInit(&data->xformTmp1[i]);
         TransformDataInit(&data->xformTmp2[i]);
         TransformDataInit(&data->xformTmp3[i]);
+        data->jointNamesCombo[i] = NULL;
     }
 
     data->colorPickerActive = ArgBool(argc, argv, "colorPickerActive", false);
@@ -1386,9 +1426,11 @@ static inline void CharacterDataFree(CharacterData* data)
         TransformDataFree(&data->xformTmp2[i]);
         TransformDataFree(&data->xformTmp3[i]);
         BVHDataFree(&data->bvhData[i]);
+        free(data->jointNamesCombo[i]);
     }
 }
 
+// Attempt to load a new character from the given file path
 static bool CharacterDataLoadFromFile(
     CharacterData* data,
     const char* path,
@@ -1440,6 +1482,28 @@ static bool CharacterDataLoadFromFile(
         {
             data->autoScales[data->count] = 1.0f;
         }
+        
+        // Joint names combo
+
+        int comboTotalSize = 0;
+        for (int i = 0; i < data->bvhData[data->count].jointCount; i++)
+        {
+            comboTotalSize += (i > 0 ? 1 : 0) + strlen(data->bvhData[data->count].joints[i].name);
+        }
+        comboTotalSize++;
+
+        data->jointNamesCombo[data->count] = malloc(comboTotalSize);
+        data->jointNamesCombo[data->count][0] = '\0';
+        for (int i = 0; i < data->bvhData[data->count].jointCount; i++)
+        {
+            if (i > 0)
+            {
+                strcat(data->jointNamesCombo[data->count], ";");
+            }
+            strcat(data->jointNamesCombo[data->count], data->bvhData[data->count].joints[i].name);
+        }
+
+        // Done
 
         data->count++;
 
@@ -1452,42 +1516,22 @@ static bool CharacterDataLoadFromFile(
     }
 }
 
-//--------------------------------------
-// Capsule Functions
-//--------------------------------------
+//----------------------------------------------------------------------------------
+// Geometric Functions
+//----------------------------------------------------------------------------------
 
-static inline Vector3 CapsuleStart(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
-{
-    return Vector3Add(capsulePosition,
-        Vector3RotateByQuaternion((Vector3){+capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
-}
-
-static inline Vector3 CapsuleEnd(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
-{
-    return Vector3Add(capsulePosition,
-        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
-}
-
-static inline Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
-{
-    Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
-
-    return Vector3Subtract(Vector3Add(capsulePosition,
-        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)), capsuleStart);
-}
-
+// Returns the time parameter along a line segment closest to another point
 static inline float NearestPointOnLineSegment(
     Vector3 lineStart,
-    Vector3 lineEnd,
+    Vector3 lineVector,
     Vector3 point)
 {
-    Vector3 ab = Vector3Subtract(lineEnd, lineStart);
     Vector3 ap = Vector3Subtract(point, lineStart);
-    float lengthsq = Vector3LengthSqr(ab);
-
-    return lengthsq < 1e-8f ? 0.5f : Saturate(Vector3DotProduct(ab, ap) / lengthsq);
+    float lengthsq = Vector3LengthSqr(lineVector);
+    return lengthsq < 1e-8f ? 0.5f : Saturate(Vector3DotProduct(lineVector, ap) / lengthsq);
 }
 
+// Returns the time parameters along two line segments at the closest point between the two
 static inline void NearestPointBetweenLineSegments(
     float* nearestTime0,
     float* nearestTime1,
@@ -1504,16 +1548,17 @@ static inline void NearestPointBetweenLineSegments(
     float d3 = Vector3LengthSqr(Vector3Subtract(line1End, line0End));
 
     *nearestTime0 = (d2 < d0 || d2 < d1 || d3 < d0 || d3 < d1) ? 1.0f : 0.0f;
-    *nearestTime1 = NearestPointOnLineSegment(line1Start, line1End, Vector3Add(line0Start, Vector3Scale(line0Vec, *nearestTime0)));
-    *nearestTime0 = NearestPointOnLineSegment(line0Start, line0End, Vector3Add(line1Start, Vector3Scale(line1Vec, *nearestTime1)));
+    *nearestTime1 = NearestPointOnLineSegment(line1Start, line1Vec, Vector3Add(line0Start, Vector3Scale(line0Vec, *nearestTime0)));
+    *nearestTime0 = NearestPointOnLineSegment(line0Start, line0Vec, Vector3Add(line1Start, Vector3Scale(line1Vec, *nearestTime1)));
 }
 
-static inline float NearestPointBetweenLineSegmentAndGroundPlane(Vector3 lineStart, Vector3 lineEnd)
+// Returns the time parameter for a line segment closest to the ground plane
+static inline float NearestPointBetweenLineSegmentAndGroundPlane(Vector3 lineStart, Vector3 lineVector)
 {
-    Vector3 lineVector = Vector3Subtract(lineEnd, lineStart);
     return fabs(lineVector.y) < 1e-8f ? 0.5f : Saturate((-lineStart.y) / lineVector.y);
 }
 
+// Returns the time parameter and nearest point on the ground between a line segment and ground segment 
 static inline void NearestPointBetweenLineSegmentAndGroundSegment(
     float* nearestTimeOnLine,
     Vector3* nearestPointOnGround,
@@ -1526,7 +1571,7 @@ static inline void NearestPointBetweenLineSegmentAndGroundSegment(
   
     // Check Against Plane
 
-    *nearestTimeOnLine = NearestPointBetweenLineSegmentAndGroundPlane(lineStart, lineEnd);
+    *nearestTimeOnLine = NearestPointBetweenLineSegmentAndGroundPlane(lineStart, lineVec);
     *nearestPointOnGround = (Vector3){
         lineStart.x + (*nearestTimeOnLine) * lineVec.x,
         0.0f,
@@ -1628,7 +1673,17 @@ static inline void NearestPointBetweenLineSegmentAndGroundSegment(
     }
 }
 
-static inline float SphereOcclusionLookup(float nlAngle, float h, float maxRatio)
+// Analytical capsule and sphere occlusion functions taken from here:
+// https://www.shadertoy.com/view/3stcD4
+
+
+// This is the number of times the radius away from the sphere where
+// the ambient occlusion drops off to zero. This is important for various
+// acceleration methods to filter out capsules which are too far away and
+// so not casting any ambient occlusion
+#define AO_RATIO_MAX 4.0
+
+static inline float SphereOcclusionLookup(float nlAngle, float h)
 {
     float nl = cosf(nlAngle);
     float h2 = h*h;
@@ -1641,7 +1696,7 @@ static inline float SphereOcclusionLookup(float nlAngle, float h, float maxRatio
         res = (res / h2 + atanf(sqrt(k2 / (h2 - 1.0f)))) / PI;
     }
 
-    float decay = Max(1.0f - (h - 1.0f) / (maxRatio - 1.0f), 0.0f);
+    float decay = Max(1.0f - (h - 1.0f) / ((float)AO_RATIO_MAX - 1.0f), 0.0f);
 
     return 1.0f - res * decay;
 }
@@ -1652,10 +1707,10 @@ static inline float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float
     float l = Vector3Length(di);
     float nlAngle = acosf(Vector3DotProduct(nor, Vector3Scale(di, 1.0f / l)));
     float h  = l < rad ? 1.0 : l / rad;
-    return SphereOcclusionLookup(nlAngle, h, 4.0f);
+    return SphereOcclusionLookup(nlAngle, h);
 }
 
-static inline float CapsuleSphereIntersectionArea(float r1, float r2, float d)
+static inline float SphereIntersectionArea(float r1, float r2, float d)
 {
     if (Min(r1, r2) <= Max(r1, r2) - d)
     {
@@ -1675,7 +1730,7 @@ static inline float CapsuleSphereIntersectionArea(float r1, float r2, float d)
 
 static inline float SphereDirectionalOcclusionLookup(float phi, float theta, float coneAngle)
 {
-    return 1.0f - CapsuleSphereIntersectionArea(theta, coneAngle / 2.0f, phi) / (1.0f - cosf(coneAngle / 2.0f));
+    return 1.0f - SphereIntersectionArea(theta, coneAngle / 2.0f, phi) / (1.0f - cosf(coneAngle / 2.0f));
 }
 
 static inline float SphereDirectionalOcclusion(
@@ -1690,6 +1745,26 @@ static inline float SphereDirectionalOcclusion(
     float theta = acosf(sqrtf(occluderLen2 / (Square(radius) + occluderLen2)));
     
     return SphereDirectionalOcclusionLookup(phi, theta, coneAngle);
+}
+
+static inline Vector3 CapsuleStart(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
+{
+    return Vector3Add(capsulePosition,
+        Vector3RotateByQuaternion((Vector3){+capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
+}
+
+static inline Vector3 CapsuleEnd(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
+{
+    return Vector3Add(capsulePosition,
+        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
+}
+
+static inline Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
+{
+    Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
+
+    return Vector3Subtract(Vector3Add(capsulePosition,
+        Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)), capsuleStart);
 }
 
 static inline Vector3 CapsuleProjectOnLight(Vector3 capVec, Vector3 coneDir)
@@ -1709,10 +1784,11 @@ static inline float CapsuleDirectionalOcclusion(
     return SphereDirectionalOcclusion(pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Capsule Data
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
+// Basic type useful for sorting according to some value
 typedef struct
 {
     int index;
@@ -1733,8 +1809,10 @@ static inline int CapsuleSortCompareLess(const void* lhs, const void* rhs)
     return lhsSort->value < rhsSort->value ? 1 : -1;
 }
 
+// Structure containing all of the data required for all of the capsules which are to be rendered.
 typedef struct
 {
+    // Data for all the capsules which are in the scene
     int capsuleCount;
     Vector3* capsulePositions;
     Quaternion* capsuleRotations;
@@ -1744,47 +1822,52 @@ typedef struct
     float* capsuleOpacities;
     CapsuleSort* capsuleSort;
 
+    // Buffers for all the capsules casting ambient occlusion
     int aoCapsuleCount;
     Vector3* aoCapsuleStarts;
     Vector3* aoCapsuleVectors;
     float* aoCapsuleRadii;
     CapsuleSort* aoCapsuleSort;
 
+    // Buffers for all the capsules casting shadows
     int shadowCapsuleCount;
     Vector3* shadowCapsuleStarts;
     Vector3* shadowCapsuleVectors;
     float* shadowCapsuleRadii;
     CapsuleSort* shadowCapsuleSort;
     
+    // Lookup table for the capsule ambient occlusion function
     Image aoLookupImage;
     Texture2D aoLookupTable;
     Vector2 aoLookupResolution;
 
+    // Lookup table for the capsule shadow function
     Image shadowLookupImage;
     Texture2D shadowLookupTable;
     Vector2 shadowLookupResolution;
 
 } CapsuleData;
 
+// Compute the capsule ambient occlusion lookup table
 static void CapsuleDataUpdateAOLookupTable(CapsuleData* data)
 {
     int width = (int)data->aoLookupResolution.x;
     int height = (int)data->aoLookupResolution.y;
-    float maxRatio = 4.0f;
 
     for (int y = 0; y < height; y++)
     {
         for (int x = 0; x < width; x++)
         {
             float nlAngle = (((float)x) / (width - 1)) * PI;
-            float h = 1.0f + (maxRatio - 1.0f) * (((float)y) / (height - 1));
-            ((unsigned char*)data->aoLookupImage.data)[y * width + x] = (unsigned char)Clamp(255.0 * SphereOcclusionLookup(nlAngle, h, maxRatio), 0.0, 255.0);
+            float h = 1.0f + (AO_RATIO_MAX - 1.0f) * (((float)y) / (height - 1));
+            ((unsigned char*)data->aoLookupImage.data)[y * width + x] = (unsigned char)Clamp(255.0 * SphereOcclusionLookup(nlAngle, h), 0.0, 255.0);
         }
     }
 
     UpdateTexture(data->aoLookupTable, data->aoLookupImage.data);
 }
 
+// Compute the capsule shadow lookup table for a given coneAngle
 static void CapsuleDataUpdateShadowLookupTable(CapsuleData* data, float coneAngle)
 {
     int width = (int)data->shadowLookupResolution.x;
@@ -1805,6 +1888,8 @@ static void CapsuleDataUpdateShadowLookupTable(CapsuleData* data, float coneAngl
 
 static void CapsuleDataInit(CapsuleData* data)
 {
+    // Init
+  
     data->capsuleCount = 0;
     data->capsulePositions = NULL;
     data->capsuleRotations = NULL;
@@ -1915,11 +2000,13 @@ static inline void CapsuleDataReset(CapsuleData* data)
     data->shadowCapsuleCount = 0;
 }
 
+// Append capsules to the capsule data based off the joint transforms
 static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData* xforms, float maxCapsuleRadius, Color color, float opacity, bool ignoreEndSite)
 {
     for (int i = 0; i < xforms->jointCount; i++)
     {
         int p = xforms->parents[i];
+        
         if (p == -1) { continue; }
         if (ignoreEndSite && xforms->endSite[i]) { continue; }
 
@@ -1943,20 +2030,19 @@ static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData*
     }
 }
 
+// Here we gather up all of the capsules which are casting ambient occlusion on a ground segment.
+// This works by effectively TODO
 static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition)
 {
     data->aoCapsuleCount = 0;
-
-    float segmentRadius = sqrtf(2.0f);
 
     for (int i = 0; i < data->capsuleCount; i++)
     {
         Vector3 capsulePosition = data->capsulePositions[i];
         float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
-        float maxRatio = 4.0f;
         
-        if (Vector3Distance(groundSegmentPosition, capsulePosition) - segmentRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        if (Vector3Distance(groundSegmentPosition, capsulePosition) - sqrtf(2.0f) > capsuleHalfLength + AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
@@ -1978,7 +2064,7 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
     
         Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
         
-        if (Vector3Distance(groundPoint, capsulePoint) > maxRatio * capsuleRadius)
+        if (Vector3Distance(groundPoint, capsulePoint) > AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
@@ -2004,6 +2090,7 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
     }
 }
 
+// TODO
 static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsuleIndex)
 {
     Vector3 queryCapsulePosition = data->capsulePositions[capsuleIndex];
@@ -2023,9 +2110,8 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
         Vector3 capsulePosition = data->capsulePositions[i];
         float capsuleRadius = data->capsuleRadii[i];
         float capsuleHalfLength = data->capsuleHalfLengths[i];
-        float maxRatio = 4.0f;
 
-        if (Vector3Distance(queryCapsulePosition, capsulePosition) - queryCapsuleHalfLength - queryCapsuleRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        if (Vector3Distance(queryCapsulePosition, capsulePosition) - queryCapsuleHalfLength - queryCapsuleRadius > capsuleHalfLength + AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
@@ -2047,7 +2133,7 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
         Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
         Vector3 queryPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, queryTime));
         
-        if (Vector3Distance(queryPoint, capsulePoint) - queryCapsuleRadius > maxRatio * capsuleRadius)
+        if (Vector3Distance(queryPoint, capsulePoint) - queryCapsuleRadius > AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
@@ -2076,10 +2162,10 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
     }
 }
 
+// TODO
 static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition, Vector3 lightDir, float lightConeAngle)
 {
     Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
-    float segmentRadius = sqrtf(2.0f);
 
     data->shadowCapsuleCount = 0;
 
@@ -2089,11 +2175,11 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
       
-        float midRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsulePosition, Vector3Add(capsulePosition, lightRay));
+        float midRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsulePosition, lightRay);
         Vector3 groundCapsuleMid = Vector3Add(capsulePosition, Vector3Scale(lightRay, midRayTime));
         float maxRatio = 4.0f;
 
-        if (Vector3Distance(groundSegmentPosition, groundCapsuleMid) - segmentRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        if (Vector3Distance(groundSegmentPosition, groundCapsuleMid) - sqrtf(2.0f) > capsuleHalfLength + maxRatio * capsuleRadius)
         {
             continue;
         }
@@ -2103,8 +2189,8 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
         Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
 
-        float startRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleStart, Vector3Add(capsuleStart, lightRay));
-        float endRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleEnd, Vector3Add(capsuleEnd, lightRay));
+        float startRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleStart, lightRay);
+        float endRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleEnd, lightRay);
 
         Vector3 groundCapsuleStart = Vector3Add(capsuleStart, Vector3Scale(lightRay, startRayTime));
         Vector3 groundCapsuleEnd = Vector3Add(capsuleEnd, Vector3Scale(lightRay, endRayTime));
@@ -2114,8 +2200,8 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         groundCapsuleEnd.x = Clamp(groundCapsuleEnd.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
         groundCapsuleEnd.z = Clamp(groundCapsuleEnd.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
         
-        if (Vector3Distance(groundSegmentPosition, groundCapsuleStart) - segmentRadius > maxRatio * capsuleRadius &&
-            Vector3Distance(groundSegmentPosition, groundCapsuleEnd) - segmentRadius > maxRatio * capsuleRadius)
+        if (Vector3Distance(groundSegmentPosition, groundCapsuleStart) - sqrtf(2.0f) > maxRatio * capsuleRadius &&
+            Vector3Distance(groundSegmentPosition, groundCapsuleEnd) - sqrtf(2.0f) > maxRatio * capsuleRadius)
         {
             continue;
         }
@@ -2142,6 +2228,7 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
     }
 }
 
+// TODO
 static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int capsuleIndex, Vector3 lightDir, float lightConeAngle)
 {
     Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
@@ -2251,21 +2338,21 @@ static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, Char
     CapsuleDataResize(capsuleData, totalJointCount);
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Shaders
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
-enum
-{
-    AO_CAPSULES_MAX = 32,
-    SHADOW_CAPSULES_MAX = 64,
-};
+#define AO_CAPSULES_MAX 32
+#define SHADOW_CAPSULES_MAX 64
 
+#define GLSL_DEFINE_VALUE(X) #X
+#define GLSL_DEFINE(X) "#define " #X " " GLSL_DEFINE_VALUE(X) " \n"
 #define GLSL(X) \
   "#version 300 es\n" \
-  "#define AO_CAPSULES_MAX 32\n" \
-  "#define SHADOW_CAPSULES_MAX 64\n" \
-  "#define PI 3.14159265359\n" \
+  GLSL_DEFINE(AO_RATIO_MAX) \
+  GLSL_DEFINE(AO_CAPSULES_MAX) \
+  GLSL_DEFINE(SHADOW_CAPSULES_MAX) \
+  GLSL_DEFINE(PI) \
   #X
 
 static const char* shaderVS = GLSL(
@@ -2292,12 +2379,13 @@ out vec3 fragPosition;
 out vec2 fragTexCoord;
 out vec3 fragNormal;
 
-vec3 rotate(in vec4 q, vec3 v)
+vec3 Rotate(in vec4 q, vec3 v)
 {
     vec3 t = 2.0 * cross(q.xyz, v);
     return v + q.w * t + cross(q.xyz, t);
 }
 
+// Stretch capsule according to capsule half length
 vec3 CapsuleStretch(vec3 pos, float hlength, float radius)
 {
     vec3 scaled = pos * radius;
@@ -2311,11 +2399,11 @@ void main()
 
     if (isCapsule == 1)
     {
-        fragPosition = rotate(capsuleRotation,
+        fragPosition = Rotate(capsuleRotation,
             CapsuleStretch(vertexPosition,
             capsuleHalfLength, capsuleRadius)) + capsulePosition;
 
-        fragNormal = rotate(capsuleRotation, vertexNormal);
+        fragNormal = Rotate(capsuleRotation, vertexNormal);
     }
     else
     {
@@ -2329,6 +2417,7 @@ void main()
 );
 
 static const char* shaderFS = GLSL(
+
 precision highp float;
 precision mediump int;
 
@@ -2376,17 +2465,27 @@ uniform float exposure;
 
 out vec4 finalColor;
 
-float saturate(in float x)
+vec3 ToGamma(in vec3 col)
+{
+    return vec3(pow(col.x, 2.2), pow(col.y, 2.2), pow(col.z, 2.2));
+}
+
+vec3 FromGamma(in vec3 col)
+{
+    return vec3(pow(col.x, 1.0/2.2), pow(col.y, 1.0/2.2), pow(col.z, 1.0/2.2));
+}
+
+float Saturate(in float x)
 {
     return clamp(x, 0.0, 1.0);
 }
 
-float square(in float x)
+float Square(in float x)
 {
     return x * x;
 }
 
-float fast_acos(in float x)
+float FastAcos(in float x)
 {
     float y = abs(x);
     float p = -0.1565827 * y + 1.570796;
@@ -2394,62 +2493,24 @@ float fast_acos(in float x)
     return x >= 0.0 ? p : PI - p;
 }
 
-float fast_positive_acos(in float x)
+float FastPositiveAcos(in float x)
 {
     float p = -0.1565827 * x + 1.570796;
     return p * sqrt(max(1.0 - x, 0.0));
 }
 
-float SphereOcclusion(in vec3 pos, in vec3 nor, in vec3 sph, in float rad)
+vec3 Rotate(in vec4 q, vec3 v)
 {
-    vec3 di = sph - pos;
-    float l = length(di);
-    float nlAngle = fast_acos(dot(nor, di / l));
-    float h  = l < rad ? 1.0 : l / rad;
-    float maxRatio = 4.0;
-    vec2 uvs = vec2(nlAngle / PI, (h - 1.0) / (maxRatio - 1.0));
-    uvs = uvs * (aoLookupResolution - 1.0) / aoLookupResolution + 0.5 / aoLookupResolution;
-    return texture(aoLookupTable, uvs).r;
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
 }
 
-float CapsuleOcclusion(
-    in vec3 pos, in vec3 nor,
-    in vec3 capStart, in vec3 capVec, in float radius)
+vec3 Unrotate(in vec4 q, vec3 v)
 {
-    vec3 ba = capVec;
-    vec3 pa = pos - capStart;
-    float t = saturate(dot(pa, ba) / dot(ba, ba));
-    return SphereOcclusion(pos, nor, capStart + t * ba, radius);
+    return Rotate(vec4(-q.x, -q.y, -q.z, q.w), v);
 }
 
-float SphereDirectionalOcclusion(
-    in vec3 pos, in vec3 sphere, in float radius,
-    in vec3 coneDir)
-{
-    vec3 occluder = sphere - pos;
-    float occluderLen2 = dot(occluder, occluder);
-    vec3 occluderDir = occluder * inversesqrt(occluderLen2);
-    float phi = fast_acos(dot(occluderDir, -coneDir));
-    float theta = fast_positive_acos(sqrt(occluderLen2 / (square(radius) + occluderLen2)));
-
-    vec2 uvs = vec2(phi / PI, theta / (PI / 2.0));
-    uvs = uvs * (shadowLookupResolution - 1.0) / shadowLookupResolution + 0.5 / shadowLookupResolution;
-    return texture(shadowLookupTable, uvs).r;
-}
-
-float CapsuleDirectionalOcclusion(
-    in vec3 pos, in vec3 capStart, in vec3 capVec,
-    in float capRadius, in vec3 coneDir)
-{
-    vec3 ba = capVec;
-    vec3 pa = capStart - pos;
-    vec3 cba = dot(-coneDir, ba) * -coneDir - ba;
-    float t = saturate(dot(pa, cba) / dot(cba, cba));
-
-    return SphereDirectionalOcclusion(pos, capStart + t * ba, capRadius, coneDir);
-}
-
-float checker(in vec2 uv)
+float Checker(in vec2 uv)
 {
     vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));
     vec2 w = vec2(length(uvDDXY.xz), length(uvDDXY.yw));
@@ -2458,7 +2519,7 @@ float checker(in vec2 uv)
     return 0.5 - 0.5*i.x*i.y;
 }
 
-float grid(in vec2 uv, in float lineWidth)
+float Grid(in vec2 uv, in float lineWidth)
 {
     vec4 uvDDXY = vec4(dFdx(uv), dFdy(uv));
     vec2 uvDeriv = vec2(length(uvDDXY.xz), length(uvDDXY.yw));
@@ -2476,30 +2537,52 @@ float grid(in vec2 uv, in float lineWidth)
     return mix(g2.x, 1.0, g2.y);
 }
 
-vec3 to_gamma(in vec3 col)
+float SphereOcclusion(in vec3 pos, in vec3 nor, in vec3 sph, in float rad)
 {
-    return vec3(pow(col.x, 2.2), pow(col.y, 2.2), pow(col.z, 2.2));
+    vec3 di = sph - pos;
+    float l = length(di);
+    float nlAngle = FastAcos(dot(nor, di / l));
+    float h  = l < rad ? 1.0 : l / rad;
+    vec2 uvs = vec2(nlAngle / PI, (h - 1.0) / (AO_RATIO_MAX - 1.0));
+    uvs = uvs * (aoLookupResolution - 1.0) / aoLookupResolution + 0.5 / aoLookupResolution;
+    return texture(aoLookupTable, uvs).r;
 }
 
-vec3 from_gamma(in vec3 col)
+float SphereDirectionalOcclusion(
+    in vec3 pos, in vec3 sphere, in float radius,
+    in vec3 coneDir)
 {
-    return vec3(pow(col.x, 1.0/2.2), pow(col.y, 1.0/2.2), pow(col.z, 1.0/2.2));
+    vec3 occluder = sphere - pos;
+    float occluderLen2 = dot(occluder, occluder);
+    vec3 occluderDir = occluder * inversesqrt(occluderLen2);
+    float phi = FastAcos(dot(occluderDir, -coneDir));
+    float theta = FastPositiveAcos(sqrt(occluderLen2 / (Square(radius) + occluderLen2)));
+
+    vec2 uvs = vec2(phi / PI, theta / (PI / 2.0));
+    uvs = uvs * (shadowLookupResolution - 1.0) / shadowLookupResolution + 0.5 / shadowLookupResolution;
+    return texture(shadowLookupTable, uvs).r;
 }
 
-vec3 rotate(in vec4 q, vec3 v)
+float CapsuleOcclusion(
+    in vec3 pos, in vec3 nor,
+    in vec3 capStart, in vec3 capVec, in float radius)
 {
-    vec3 t = 2.0 * cross(q.xyz, v);
-    return v + q.w * t + cross(q.xyz, t);
+    vec3 ba = capVec;
+    vec3 pa = pos - capStart;
+    float t = Saturate(dot(pa, ba) / dot(ba, ba));
+    return SphereOcclusion(pos, nor, capStart + t * ba, radius);
 }
 
-vec4 inv(in vec4 q)
+float CapsuleDirectionalOcclusion(
+    in vec3 pos, in vec3 capStart, in vec3 capVec,
+    in float capRadius, in vec3 coneDir)
 {
-    return vec4(-q.x, -q.y, -q.z, q.w);
-}
+    vec3 ba = capVec;
+    vec3 pa = capStart - pos;
+    vec3 cba = dot(-coneDir, ba) * -coneDir - ba;
+    float t = Saturate(dot(pa, cba) / dot(cba, cba));
 
-vec3 unrotate(in vec4 q, vec3 v)
-{
-    return rotate(inv(q), v);
+    return SphereDirectionalOcclusion(pos, capStart + t * ba, capRadius, coneDir);
 }
 
 vec2 CapsuleUVs(
@@ -2507,7 +2590,7 @@ vec2 CapsuleUVs(
     in vec4 capRot, in float capHalfLength,
     in float capRadius, in vec2 scale)
 {
-    vec3 loc = unrotate(capRot, pos - capPos);
+    vec3 loc = Unrotate(capRot, pos - capPos);
 
     vec2 limit = vec2(
         2.0 * capHalfLength + 2.0 * capRadius,
@@ -2524,7 +2607,7 @@ vec3 CapsuleNormal(
 {
     vec3 ba = capVec;
     vec3 pa = pos - capStart;
-    float h = saturate(dot(pa, ba) / dot(ba, ba));
+    float h = Saturate(dot(pa, ba) / dot(ba, ba));
     return normalize(pa - h*ba);
 }
 
@@ -2533,6 +2616,8 @@ void main()
     vec3 pos = fragPosition;
     vec3 nor = fragNormal;
     vec2 uvs = fragTexCoord;
+
+    // Recompute uvs and normals if capsule
 
     if (isCapsule == 1)
     {
@@ -2547,6 +2632,8 @@ void main()
        nor = CapsuleNormal(pos, capsuleStart, capsuleVector);
     }
 
+    // Compute sun shadow amount
+
     float sunShadow = 1.0;
     for (int i = 0; i < shadowCapsuleCount; i++)
     {
@@ -2557,6 +2644,8 @@ void main()
             shadowCapsuleRadii[i],
             sunDir));
     }
+    
+    // Compute ambient shadow amount
 
     float ambShadow = 1.0;
     for (int i = 0; i < aoCapsuleCount; i++)
@@ -2568,19 +2657,23 @@ void main()
             aoCapsuleRadii[i]));
     }
 
-    float grid_fine = grid(20.0 * uvs, 0.025);
-    float grid_coarse = grid(2.0 * uvs, 0.02);
-    float check = checker(2.0 * uvs);
+    // Compute albedo from grid and checker
 
-    vec3 albedo = from_gamma(objectColor) * mix(mix(mix(0.9, 0.95, check), 0.85, grid_fine), 1.0, grid_coarse);
-    float specularity = objectSpecularity * mix(mix(0.0, 0.75, check), 1.0, grid_coarse);
+    float gridFine = Grid(20.0 * uvs, 0.025);
+    float gridCoarse = Grid(2.0 * uvs, 0.02);
+    float check = Checker(2.0 * uvs);
 
+    vec3 albedo = FromGamma(objectColor) * mix(mix(mix(0.9, 0.95, check), 0.85, gridFine), 1.0, gridCoarse);
+    float specularity = objectSpecularity * mix(mix(0.0, 0.75, check), 1.0, gridCoarse);
+    
+    // Compute lighting
+    
     vec3 eyeDir = normalize(pos - cameraPosition);
 
-    vec3 lightSunColor = from_gamma(sunColor);
+    vec3 lightSunColor = FromGamma(sunColor);
     vec3 lightSunHalf = normalize(sunDir + eyeDir);
 
-    vec3 lightSkyColor = from_gamma(skyColor);
+    vec3 lightSkyColor = FromGamma(skyColor);
     vec3 skyDir = vec3(0.0, -1.0, 0.0);
     vec3 lightSkyHalf = normalize(skyDir + eyeDir);
 
@@ -2595,7 +2688,9 @@ void main()
         pow(max(dot(nor, lightSkyHalf), 0.0), objectGlossiness);
 
     float groundFactorDiff = max(dot(nor, skyDir), 0.0);
-
+    
+    // Combine
+    
     vec3 ambient = ambShadow * ambientStrength * lightSkyColor * albedo;
 
     vec3 diffuse = sunShadow * sunStrength * lightSunColor * albedo * sunFactorDiff +
@@ -2606,7 +2701,7 @@ void main()
 
     vec3 final = diffuse + ambient + specular;
 
-    finalColor = vec4(to_gamma(exposure * final), objectOpacity);
+    finalColor = vec4(ToGamma(exposure * final), objectOpacity);
 }
 
 );
@@ -2696,10 +2791,11 @@ static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
     uniforms->exposure = GetShaderLocation(shader, "exposure");
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Models
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
+// Embedded Capsule OBJ file
 static const char* capsuleOBJ = "\
 v 0.82165808 -0.82165808 -1.0579772e-18\nv 0.82165808 -0.58100000 0.58100000\n\
 v 0.82165808 8.7595780e-17 0.82165808\nv 0.82165808 0.58100000 0.58100000\n\
@@ -2753,8 +2849,9 @@ f 30//30 27//27 29//29\nf 30//30 32//32 14//14\nf 31//31 34//34 32//32\nf 32//32
 f 33//33 19//19 34//34\nf 33//33 31//31 8//8\nf 34//34 19//19 16//16\nf 34//34 31//31 33//33";
 
 #undef TINYOBJ_LOADER_C_IMPLEMENTATION
-#include "external/tinyobj_loader_c.h"      // OBJ/MTL file formats loading
+#include "external/tinyobj_loader_c.h"
 
+// Extra function for loading OBJ from memory
 static Model LoadOBJFromMemory(const char *fileText)
 {
     Model model = { 0 };
@@ -2771,9 +2868,8 @@ static Model LoadOBJFromMemory(const char *fileText)
         unsigned int dataSize = (unsigned int)strlen(fileText);
 
         unsigned int flags = TINYOBJ_FLAG_TRIANGULATE;
-        int ret = tinyobj_parse_obj(&attrib, &meshes, &meshCount, &materials, &materialCount, fileText, dataSize, flags);
-        assert(ret == 0);
-
+        tinyobj_parse_obj(&attrib, &meshes, &meshCount, &materials, &materialCount, fileText, dataSize, flags);
+        
         model.meshCount = 1;
         model.meshes = (Mesh *)RL_CALLOC(model.meshCount, sizeof(Mesh));
         model.meshMaterial = (int *)RL_CALLOC(model.meshCount, sizeof(int));
@@ -2865,9 +2961,9 @@ static Model LoadOBJFromMemory(const char *fileText)
     return model;
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Render Settings
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 typedef struct {
 
@@ -3020,9 +3116,9 @@ static inline void ScrubberSettingsClamp(ScrubberSettings* settings, CharacterDa
     settings->playTime = Clamp(settings->playTime, settings->timeMin, settings->timeMax);
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Drawing
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 static inline void DrawTransform(const Vector3 position, const Quaternion rotation, const float size)
 {
@@ -3100,9 +3196,9 @@ static inline void DrawWireFrames(CapsuleData* capsuleData, Color color)
     }
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // GUI
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 static inline void GuiOrbitCamera(OrbitCamera* camera, CharacterData* characterData)
 {
@@ -3118,7 +3214,7 @@ static inline void GuiOrbitCamera(OrbitCamera* camera, CharacterData* characterD
     if (characterData->count > 0)
     {
         GuiToggle((Rectangle){ 30, 150, 100, 20 }, "Track", &camera->track);
-        GuiComboBox((Rectangle){ 30, 180, 150, 20 }, characterData->bvhData[characterData->active].jointNamesCombo, &camera->trackBone);
+        GuiComboBox((Rectangle){ 30, 180, 150, 20 }, characterData->jointNamesCombo[characterData->active], &camera->trackBone);
     }
 }
 
@@ -3388,9 +3484,9 @@ static inline void GuiScrubberSettings(
     }
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Application
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 typedef struct {
 
@@ -3623,10 +3719,10 @@ static void ApplicationUpdate(void* voidApplicationState)
     SetShaderValue(app->shader, app->uniforms.objectSpecularity, &objectSpecularity, SHADER_UNIFORM_FLOAT);
     SetShaderValue(app->shader, app->uniforms.objectGlossiness, &objectGlossiness, SHADER_UNIFORM_FLOAT);
     SetShaderValue(app->shader, app->uniforms.objectOpacity, &objectOpacity, SHADER_UNIFORM_FLOAT);
-    SetShaderValueTexture(app->shader, app->uniforms.aoLookupTable, app->capsuleData.aoLookupTable);
     SetShaderValue(app->shader, app->uniforms.aoLookupResolution, &app->capsuleData.aoLookupResolution, SHADER_UNIFORM_VEC2);
-    SetShaderValueTexture(app->shader, app->uniforms.shadowLookupTable, app->capsuleData.shadowLookupTable);
     SetShaderValue(app->shader, app->uniforms.shadowLookupResolution, &app->capsuleData.shadowLookupResolution, SHADER_UNIFORM_VEC2);
+    SetShaderValueTexture(app->shader, app->uniforms.aoLookupTable, app->capsuleData.aoLookupTable);
+    SetShaderValueTexture(app->shader, app->uniforms.shadowLookupTable, app->capsuleData.shadowLookupTable);
     
     // Draw Ground
 
@@ -3635,7 +3731,7 @@ static void ApplicationUpdate(void* voidApplicationState)
     if (app->renderSettings.drawChecker)
     {
         int groundIsCapsule = 0;
-        Vector3 groundColor = { 0.9f, 0.9f, 0.9f };
+        Vector3 groundColor = { 1.0f, 1.0f, 1.0f };
 
         SetShaderValue(app->shader, app->uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
@@ -3644,11 +3740,14 @@ static void ApplicationUpdate(void* voidApplicationState)
         {
             for (int j = 0; j < 11; j++)
             {
-                Vector3 groundSegmentPosition = {
+                // Check if we can cull ground segment
+
+                Vector3 groundSegmentPosition =
+                {
                     (((float)i / 10) - 0.5f) * 20.0f,
-                    -0.001f,
+                    0.0f,
                     (((float)j / 10) - 0.5f) * 20.0f,
-                };
+                };                
                 
                 if (!FrustumContainsSphere(frustum, groundSegmentPosition, sqrtf(2.0f)))
                 {
@@ -3657,39 +3756,43 @@ static void ApplicationUpdate(void* voidApplicationState)
 
                 PROFILE_BEGIN(RenderingGroundSegment);
                 
-                app->capsuleData.aoCapsuleCount = 0;
-                app->capsuleData.shadowCapsuleCount = 0;
-
+                // Gather all capsules casting AO on this ground segment
+                
                 PROFILE_BEGIN(RenderingGroundSegmentAO);
                 
+                app->capsuleData.aoCapsuleCount = 0;
                 if (app->renderSettings.drawCapsules && app->renderSettings.drawAO)
                 {  
                     CapsuleDataUpdateAOCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition);
                 }
+                int aoCapsuleCount = MinInt(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
 
                 PROFILE_END(RenderingGroundSegmentAO);
-
-                PROFILE_BEGIN(RenderingGroundSegmentShadow);
-
-                if (app->renderSettings.drawCapsules && app->renderSettings.drawShadows)
-                {
-                    CapsuleDataUpdateShadowCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition, sunLightDir, app->renderSettings.sunLightConeAngle);
-                }
-
-                PROFILE_END(RenderingGroundSegmentShadow);
-
-                int aoCapsuleCount = MinInt(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
-                int shadowCapsuleCount = MinInt(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-
-                SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
-                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
-
+                
                 SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
                 SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
                 SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);
                 SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
+                
+                // Gather all capsules casting shadows on this ground segment
+                
+                PROFILE_BEGIN(RenderingGroundSegmentShadow);
+
+                app->capsuleData.shadowCapsuleCount = 0;
+                if (app->renderSettings.drawCapsules && app->renderSettings.drawShadows)
+                {
+                    CapsuleDataUpdateShadowCapsulesForGroundSegment(&app->capsuleData, groundSegmentPosition, sunLightDir, app->renderSettings.sunLightConeAngle);
+                }
+                int shadowCapsuleCount = MinInt(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
+
+                PROFILE_END(RenderingGroundSegmentShadow);
+                
+                SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
+                SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
+                
+                // Draw
 
                 DrawModel(app->groundPlaneModel, groundSegmentPosition, 1.0f, WHITE);
 
@@ -3724,7 +3827,9 @@ static void ApplicationUpdate(void* voidApplicationState)
         for (int i = 0; i < app->capsuleData.capsuleCount; i++)
         {
             int j = app->capsuleData.capsuleSort[i].index;
-
+            
+            // Check if we can cull capsule
+            
             Vector3 capsulePosition = app->capsuleData.capsulePositions[j];
             float capsuleHalfLength = app->capsuleData.capsuleHalfLengths[j];
             float capsuleRadius = app->capsuleData.capsuleRadii[j];
@@ -3733,65 +3838,75 @@ static void ApplicationUpdate(void* voidApplicationState)
             {
                 continue;
             }
-          
+                        
             PROFILE_BEGIN(RenderingCapsulesCapsule);
-
+            
+            // If capsule is semi-transparent disable depth mask
+            
             if (app->capsuleData.capsuleOpacities[j] < 1.0f)
             {
                 rlDrawRenderBatchActive();
                 rlDisableDepthMask();
             }
-
-            app->capsuleData.aoCapsuleCount = 0;
-            app->capsuleData.shadowCapsuleCount = 0;
-
-            PROFILE_BEGIN(RenderingCapsulesCapsuleAO);
-
-            if (app->renderSettings.drawAO)
-            {
-                CapsuleDataUpdateAOCapsulesForCapsule(&app->capsuleData, j);
-            }
             
-            PROFILE_END(RenderingCapsulesCapsuleAO);
-
-            PROFILE_BEGIN(RenderingCapsulesCapsuleShadow);
-
-            if (app->renderSettings.drawShadows)
-            {
-                CapsuleDataUpdateShadowCapsulesForCapsule(&app->capsuleData, j, sunLightDir, app->renderSettings.sunLightConeAngle);
-            }
-
-            PROFILE_END(RenderingCapsulesCapsuleShadow);
-
-            int shadowCapsuleCount = MinInt(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
-            int aoCapsuleCount = MinInt(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
-
+            // Set shader properties
+            
             Quaternion capsuleRotation = app->capsuleData.capsuleRotations[j];
             Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
             Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
 
             SetShaderValue(app->shader, app->uniforms.objectColor, &app->capsuleData.capsuleColors[j], SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.objectOpacity, &app->capsuleData.capsuleOpacities[j], SHADER_UNIFORM_FLOAT);
-
-            SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
-            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
-            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
-
-            SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
-            SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
-            SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);
-            SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
-
             SetShaderValue(app->shader, app->uniforms.capsulePosition, &app->capsuleData.capsulePositions[j], SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.capsuleRotation, &app->capsuleData.capsuleRotations[j], SHADER_UNIFORM_VEC4);
             SetShaderValue(app->shader, app->uniforms.capsuleHalfLength, &app->capsuleData.capsuleHalfLengths[j], SHADER_UNIFORM_FLOAT);
             SetShaderValue(app->shader, app->uniforms.capsuleRadius, &app->capsuleData.capsuleRadii[j], SHADER_UNIFORM_FLOAT);
             SetShaderValue(app->shader, app->uniforms.capsuleStart, &capsuleStart, SHADER_UNIFORM_VEC3);
             SetShaderValue(app->shader, app->uniforms.capsuleVector, &capsuleVector, SHADER_UNIFORM_VEC3);
+            
+            // Find all capsules casting AO on this capsule
+
+            PROFILE_BEGIN(RenderingCapsulesCapsuleAO);
+
+            app->capsuleData.aoCapsuleCount = 0;
+            if (app->renderSettings.drawAO)
+            {
+                CapsuleDataUpdateAOCapsulesForCapsule(&app->capsuleData, j);
+            }
+            int aoCapsuleCount = MinInt(app->capsuleData.aoCapsuleCount, AO_CAPSULES_MAX);
+            
+            PROFILE_END(RenderingCapsulesCapsuleAO);
+
+            SetShaderValue(app->shader, app->uniforms.aoCapsuleCount, &aoCapsuleCount, SHADER_UNIFORM_INT);
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);
+            SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
+
+
+            // Find all capsules casting shadows on this capsule
+
+            PROFILE_BEGIN(RenderingCapsulesCapsuleShadow);
+
+            app->capsuleData.shadowCapsuleCount = 0;
+            if (app->renderSettings.drawShadows)
+            {
+                CapsuleDataUpdateShadowCapsulesForCapsule(&app->capsuleData, j, sunLightDir, app->renderSettings.sunLightConeAngle);
+            }
+            int shadowCapsuleCount = MinInt(app->capsuleData.shadowCapsuleCount, SHADOW_CAPSULES_MAX);
+
+            PROFILE_END(RenderingCapsulesCapsuleShadow);
+
+            SetShaderValue(app->shader, app->uniforms.shadowCapsuleCount, &shadowCapsuleCount, SHADER_UNIFORM_INT);
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleStarts, app->capsuleData.shadowCapsuleStarts, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleVectors, app->capsuleData.shadowCapsuleVectors, SHADER_UNIFORM_VEC3, shadowCapsuleCount);
+            SetShaderValueV(app->shader, app->uniforms.shadowCapsuleRadii, app->capsuleData.shadowCapsuleRadii, SHADER_UNIFORM_FLOAT, shadowCapsuleCount);
+
+            // Draw
 
             DrawModel(app->capsuleModel, Vector3Zero(), 1.0f, WHITE);
-
+            
+            // Reset depth mask if rendered semi-transparent
+            
             if (app->capsuleData.capsuleOpacities[j] < 1.0f)
             {
                 rlDrawRenderBatchActive();
@@ -3917,8 +4032,6 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         GuiScrubberSettings(&app->scrubberSettings, &app->characterData, app->screenWidth, app->screenHeight);
 
-        // Draw UI
-        
         // File Dialog
 
         if (app->fileDialogState.windowActive) { GuiUnlock(); }
@@ -3928,14 +4041,16 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     PROFILE_END(Gui);
 
-#if defined(ENABLE_PROFILE)
-    ProfileTickersUpdate(&tickers);
+    // Display Profile Records
+
+    PROFILE_UPDATE();
     
-    for (int i = 0; i < g_profile_records.num; i++)
+#if defined(ENABLE_PROFILE)
+    for (int i = 0; i < globalProfileRecords.num; i++)
     {
-        GuiLabel((Rectangle){ 260, 10 + (float)i * 20, 200, 20 }, g_profile_records.records[i]->name);
-        GuiLabel((Rectangle){ 450, 10 + (float)i * 20, 100, 20 }, TextFormat("%6.1f us", tickers.times[i]));
-        GuiLabel((Rectangle){ 550, 10 + (float)i * 20, 100, 20 }, TextFormat("%i calls", tickers.frameIterations[i]));
+        GuiLabel((Rectangle){ 260, 10 + (float)i * 20, 200, 20 }, globalProfileRecords.records[i]->name);
+        GuiLabel((Rectangle){ 450, 10 + (float)i * 20, 100, 20 }, TextFormat("%6.1f us", globalProfileTickers.times[i]));
+        GuiLabel((Rectangle){ 550, 10 + (float)i * 20, 100, 20 }, TextFormat("%i calls", globalProfileTickers.samples[i]));
     }
 #endif
 
@@ -3944,26 +4059,23 @@ static void ApplicationUpdate(void* voidApplicationState)
     EndDrawing();
 }
 
-//--------------------------------------
+//----------------------------------------------------------------------------------
 // Main
-//--------------------------------------
+//----------------------------------------------------------------------------------
 
 int main(int argc, char** argv)
 {
-    ApplicationState app;
-
-    app.argc = argc;
-    app.argv = argv;
-    
-#if defined(ENABLE_PROFILE)
     PROFILE_INIT()
-    ProfileTickersInit(&tickers);
-#endif
     
-    // Init Window
-
+    // Init Application State
+    
+    ApplicationState app;
+    app.argc = argc;
+    app.argv = argv;    
     app.screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
     app.screenHeight = ArgInt(argc, argv, "screenHeight", 720);
+    
+    // Init Window
 
     SetConfigFlags(FLAG_VSYNC_HINT);
     SetConfigFlags(FLAG_MSAA_4X_HINT);
@@ -3979,7 +4091,7 @@ int main(int argc, char** argv)
     app.shader = LoadShaderFromMemory(shaderVS, shaderFS);
     ShaderUniformsInit(&app.uniforms, app.shader);
 
-    // Meshes
+    // Models
 
     app.groundPlaneMesh = GenMeshPlane(2.0f, 2.0f, 1, 1);
     app.groundPlaneModel = LoadModelFromMesh(app.groundPlaneMesh);
@@ -4009,9 +4121,11 @@ int main(int argc, char** argv)
 
     app.fileDialogState = InitGuiWindowFileDialog(GetWorkingDirectory());
 
-    // Load File(s)
-
+    // Reset Error Message
+    
     app.errMsg[0] = '\0';
+
+    // Load File(s)
 
     for (int i = 1; i < argc; i++)
     {
@@ -4019,6 +4133,8 @@ int main(int argc, char** argv)
 
         CharacterDataLoadFromFile(&app.characterData, argv[i], app.errMsg, 512);
     }
+
+    // If any characters loaded, update capsules and scrubber
 
     if (app.characterData.count > 0)
     {
