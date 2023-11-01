@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <errno.h>
 
 #include "raylib.h"
 #include "rcamera.h"
@@ -45,7 +46,7 @@ static int errno;
 // Profiling
 //----------------------------------------------------------------------------------
 
-#define ENABLE_PROFILE
+//#define ENABLE_PROFILE
 
 #if defined(ENABLE_PROFILE)
 
