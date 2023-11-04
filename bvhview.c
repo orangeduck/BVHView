@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <float.h>
+#include <errno.h>
 
 #include "raylib.h"
 #include "rcamera.h"
