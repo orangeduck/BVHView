@@ -532,6 +532,23 @@ static inline Color ArgColor(int argc, char** argv, const char* name, Color defa
     return defaultValue;
 }
 
+// Parse a vector3 argument from the command line
+static inline Vector3 ArgVector3(int argc, char** argv, const char* name, Vector3 defaultValue)
+{
+    char* value = ArgFind(argc, argv, name);
+    if (!value) { return defaultValue; }
+
+    float cx, cy, cz;
+    if (sscanf(value, "%f,%f,%f", &cx, &cy, &cz) == 3)
+    {
+        printf("INFO: Parsed option '%s' as '%s'\n", name, value);
+        return (Vector3){ cx, cy, cz };
+    }
+
+    printf("ERROR: Could not parse value '%s' given for option '%s' as color\n", value, name);
+    return defaultValue;
+}
+
 //----------------------------------------------------------------------------------
 // Camera
 //----------------------------------------------------------------------------------
@@ -543,6 +560,7 @@ typedef struct {
     float azimuth;
     float altitude;
     float distance;
+    Vector3 offset;
     bool track;
     int trackBone;
 
@@ -560,6 +578,7 @@ static inline void OrbitCameraInit(OrbitCamera* camera, int argc, char** argv)
     camera->azimuth = ArgFloat(argc, argv, "cameraAzimuth", 0.0f);
     camera->altitude = ArgFloat(argc, argv, "cameraAltitude", 0.4f);
     camera->distance = ArgFloat(argc, argv, "cameraDistance", 4.0f);
+    camera->offset = ArgVector3(argc, argv, "cameraOffset", Vector3Zero());
     camera->track = ArgBool(argc, argv, "cameraTrack", true);
     camera->trackBone = ArgInt(argc, argv, "cameraTrackBone", 0);
 }
@@ -567,24 +586,32 @@ static inline void OrbitCameraInit(OrbitCamera* camera, int argc, char** argv)
 static inline void OrbitCameraUpdate(
     OrbitCamera* camera,
     Vector3 target,
-    float mouseDx,
-    float mouseDy,
+    float azimuthDelta,
+    float altitudeDelta,
+    float offsetDeltaX,
+    float offsetDeltaY,
     float mouseWheel,
     float dt)
 {
-    camera->azimuth = camera->azimuth + 1.0f * dt * -mouseDx;
-    camera->altitude = Clamp(camera->altitude + 1.0f * dt * mouseDy, 0.0, 0.4f * PI);
+    camera->azimuth = camera->azimuth + 1.0f * dt * -azimuthDelta;
+    camera->altitude = Clamp(camera->altitude + 1.0f * dt * altitudeDelta, 0.0, 0.4f * PI);
     camera->distance = Clamp(camera->distance +  20.0f * dt * -mouseWheel, 0.1f, 100.0f);
-
+    
     Quaternion rotationAzimuth = QuaternionFromAxisAngle((Vector3){0, 1, 0}, camera->azimuth);
     Vector3 position = Vector3RotateByQuaternion((Vector3){0, 0, camera->distance}, rotationAzimuth);
     Vector3 axis = Vector3Normalize(Vector3CrossProduct(position, (Vector3){0, 1, 0}));
 
     Quaternion rotationAltitude = QuaternionFromAxisAngle(axis, camera->altitude);
 
-    Vector3 eye = Vector3Add(target, Vector3RotateByQuaternion(position, rotationAltitude));
+    Vector3 localOffset = (Vector3){ dt * offsetDeltaX, dt * -offsetDeltaY, 0.0f };
+    localOffset = Vector3RotateByQuaternion(localOffset, rotationAzimuth);
 
-    camera->cam3d.target = target;
+    camera->offset = Vector3Add(camera->offset, Vector3RotateByQuaternion(localOffset, rotationAltitude));
+
+    Vector3 cameraTarget = Vector3Add(camera->offset, target);
+    Vector3 eye = Vector3Add(cameraTarget, Vector3RotateByQuaternion(position, rotationAltitude));
+
+    camera->cam3d.target = cameraTarget;
     camera->cam3d.position = eye;
 }
 
@@ -3424,21 +3451,33 @@ static inline void DrawWireFrames(CapsuleData* capsuleData, Color color)
 // GUI
 //----------------------------------------------------------------------------------
 
-static inline void GuiOrbitCamera(OrbitCamera* camera, CharacterData* characterData)
+static inline void GuiOrbitCamera(OrbitCamera* camera, CharacterData* characterData, int argc, char** argv)
 {
-    GuiGroupBox((Rectangle){ 20, 10, 190, 200 }, "Camera");
+    GuiGroupBox((Rectangle){ 20, 10, 190, 260 }, "Camera");
 
     GuiLabel((Rectangle){ 30, 20, 150, 20 }, "Ctrl + Left Click - Rotate");
-    GuiLabel((Rectangle){ 30, 40, 150, 20 }, "Mouse Scroll - Zoom");
-    GuiLabel((Rectangle){ 30, 60, 150, 20 }, TextFormat("Target: [% 5.3f % 5.3f % 5.3f]", camera->cam3d.target.x, camera->cam3d.target.y, camera->cam3d.target.z));
-    GuiLabel((Rectangle){ 30, 80, 150, 20 }, TextFormat("Azimuth: %5.3f", camera->azimuth));
-    GuiLabel((Rectangle){ 30, 100, 150, 20 }, TextFormat("Altitude: %5.3f", camera->altitude));
-    GuiLabel((Rectangle){ 30, 120, 150, 20 }, TextFormat("Distance: %5.3f", camera->distance));
+    GuiLabel((Rectangle){ 30, 40, 150, 20 }, "Ctrl + Right Click - Pan");
+    GuiLabel((Rectangle){ 30, 60, 150, 20 }, "Mouse Scroll - Zoom");
+    GuiLabel((Rectangle){ 30, 80, 150, 20 }, TextFormat("Target: [% 5.3f % 5.3f % 5.3f]", camera->cam3d.target.x, camera->cam3d.target.y, camera->cam3d.target.z));
+    GuiLabel((Rectangle){ 30, 100, 150, 20 }, TextFormat("Offset: [% 5.3f % 5.3f % 5.3f]", camera->offset.x, camera->offset.y, camera->offset.z));
+    GuiLabel((Rectangle){ 30, 120, 150, 20 }, TextFormat("Azimuth: %5.3f", camera->azimuth));
+    GuiLabel((Rectangle){ 30, 140, 150, 20 }, TextFormat("Altitude: %5.3f", camera->altitude));
+    GuiLabel((Rectangle){ 30, 160, 150, 20 }, TextFormat("Distance: %5.3f", camera->distance));
+    
+    if (GuiButton((Rectangle){ 30, 180, 100, 20 }, "Reset"))
+    {
+        camera->azimuth = ArgFloat(argc, argv, "cameraAzimuth", 0.0f);
+        camera->altitude = ArgFloat(argc, argv, "cameraAltitude", 0.4f);
+        camera->distance = ArgFloat(argc, argv, "cameraDistance", 4.0f);
+        camera->offset = ArgVector3(argc, argv, "cameraOffset", Vector3Zero());
+        camera->track = ArgBool(argc, argv, "cameraTrack", true);
+        camera->trackBone = ArgInt(argc, argv, "cameraTrackBone", 0);
+    }
 
     if (characterData->count > 0)
     {
-        GuiToggle((Rectangle){ 30, 150, 100, 20 }, "Track", &camera->track);
-        GuiComboBox((Rectangle){ 30, 180, 150, 20 }, characterData->jointNamesCombo[characterData->active], &camera->trackBone);
+        GuiToggle((Rectangle){ 30, 210, 100, 20 }, "Track", &camera->track);
+        GuiComboBox((Rectangle){ 30, 240, 150, 20 }, characterData->jointNamesCombo[characterData->active], &camera->trackBone);
     }
 }
 
@@ -3527,16 +3566,18 @@ static inline void GuiCharacterData(
     int argc,
     char** argv)
 {
-    GuiGroupBox((Rectangle){ 20, 230, 190, (CHARACTERS_MAX - 1) * 30 + 160 }, "Characters");
+    int offsetHeight = 280;
+  
+    GuiGroupBox((Rectangle){ 20, offsetHeight, 190, (CHARACTERS_MAX - 1) * 30 + 150 }, "Characters");
 
 #if !defined(PLATFORM_WEB)
-    if (GuiButton((Rectangle){ 30, 240, 110, 20 }, "Open"))
+    if (GuiButton((Rectangle){ 30, offsetHeight + 10, 110, 20 }, "Open"))
     {
         fileDialogState->windowActive = true;
     }
 #endif
 
-    if (GuiButton((Rectangle){ 150, 240, 50, 20 }, "Clear"))
+    if (GuiButton((Rectangle){ 150, offsetHeight + 10, 50, 20 }, "Clear"))
     {
         characterData->count = 0;
         errMsg[0] = '\0';
@@ -3559,7 +3600,7 @@ static inline void GuiCharacterData(
         }
 
         bool bvhSelected = i == characterData->active;
-        GuiToggle((Rectangle){ 30, 270 + i * 30, 140, 20 }, bvhNameShort, &bvhSelected);
+        GuiToggle((Rectangle){ 30, offsetHeight + 40 + i * 30, 140, 20 }, bvhNameShort, &bvhSelected);
 
         if (bvhSelected && (characterData->active != i))
         {
@@ -3571,53 +3612,56 @@ static inline void GuiCharacterData(
             SetWindowTitle(windowTitle);
         }
 
-        DrawRectangleRec((Rectangle){ 180, 270 + i * 30, 20, 20 }, characterData->colors[i]);
-        DrawRectangleLinesEx((Rectangle){ 180, 270 + i * 30, 20, 20 }, 1, GRAY);
+        DrawRectangleRec((Rectangle){ 180, offsetHeight + 40 + i * 30, 20, 20 }, characterData->colors[i]);
+        DrawRectangleLinesEx((Rectangle){ 180, offsetHeight + 40 + i * 30, 20, 20 }, 1, GRAY);
 
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
         {
             Vector2 mousePosition = GetMousePosition();
             if (mousePosition.x > 180 && mousePosition.x < 200 &&
-                mousePosition.y > 270 + i * 30 && mousePosition.y < 270 + i * 30 + 20)
+                mousePosition.y > offsetHeight + 40 + i * 30 && mousePosition.y < offsetHeight + 40 + i * 30 + 20)
             {
                 characterData->colorPickerActive = !characterData->colorPickerActive;
             }
         }
     }
+    
+    if (characterData->count > 0)
+    {
+        bool scaleM = characterData->scales[characterData->active] == 1.0f;
+        GuiToggle((Rectangle){ 30, offsetHeight + 60 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "m", &scaleM);
+        if (scaleM) { characterData->scales[characterData->active] = 1.0f; }
 
-    bool scaleM = characterData->scales[characterData->active] == 1.0f;
-    GuiToggle((Rectangle){ 30, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "m", &scaleM);
-    if (scaleM) { characterData->scales[characterData->active] = 1.0f; }
+        bool scaleCM = characterData->scales[characterData->active] == 0.01f;
+        GuiToggle((Rectangle){ 65, offsetHeight + 60 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "cm", &scaleCM);
+        if (scaleCM) { characterData->scales[characterData->active] = 0.01f; }
 
-    bool scaleCM = characterData->scales[characterData->active] == 0.01f;
-    GuiToggle((Rectangle){ 65, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "cm", &scaleCM);
-    if (scaleCM) { characterData->scales[characterData->active] = 0.01f; }
+        bool scaleInches = characterData->scales[characterData->active] == 0.0254f;
+        GuiToggle((Rectangle){ 100, offsetHeight + 60 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "inch", &scaleInches);
+        if (scaleInches) { characterData->scales[characterData->active] = 0.0254f; }
 
-    bool scaleInches = characterData->scales[characterData->active] == 0.0254f;
-    GuiToggle((Rectangle){ 100, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "inch", &scaleInches);
-    if (scaleInches) { characterData->scales[characterData->active] = 0.0254f; }
+        bool scaleFeet = characterData->scales[characterData->active] == 0.3048f;
+        GuiToggle((Rectangle){ 135, offsetHeight + 60 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "feet", &scaleFeet);
+        if (scaleFeet) { characterData->scales[characterData->active] = 0.3048f; }
 
-    bool scaleFeet = characterData->scales[characterData->active] == 0.3048f;
-    GuiToggle((Rectangle){ 135, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "feet", &scaleFeet);
-    if (scaleFeet) { characterData->scales[characterData->active] = 0.3048f; }
+        bool scaleAuto = characterData->scales[characterData->active] == characterData->autoScales[characterData->active];
+        GuiToggle((Rectangle){ 170, offsetHeight + 60 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "auto", &scaleAuto);
+        if (scaleAuto) { characterData->scales[characterData->active] = characterData->autoScales[characterData->active]; }
 
-    bool scaleAuto = characterData->scales[characterData->active] == characterData->autoScales[characterData->active];
-    GuiToggle((Rectangle){ 170, 300 + (CHARACTERS_MAX - 1) * 30, 30, 20 }, "auto", &scaleAuto);
-    if (scaleAuto) { characterData->scales[characterData->active] = characterData->autoScales[characterData->active]; }
+        GuiSliderBar(
+            (Rectangle){ 70, offsetHeight + 90 + (CHARACTERS_MAX - 1) * 30, 100, 20 },
+            "Radius",
+            TextFormat("%5.2f", characterData->radii[characterData->active]),
+            &characterData->radii[characterData->active],
+            0.01f, 0.1f);
 
-    GuiSliderBar(
-        (Rectangle){ 70, 330 + (CHARACTERS_MAX - 1) * 30, 100, 20 },
-        "Radius",
-        TextFormat("%5.2f", characterData->radii[characterData->active]),
-        &characterData->radii[characterData->active],
-        0.01f, 0.1f);
-
-    GuiSliderBar(
-        (Rectangle){ 70, 360 + (CHARACTERS_MAX - 1) * 30, 100, 20 },
-        "Opacity",
-        TextFormat("%5.2f", characterData->opacities[characterData->active]),
-        &characterData->opacities[characterData->active],
-        0.0f, 1.0f);
+        GuiSliderBar(
+            (Rectangle){ 70, offsetHeight + 120 + (CHARACTERS_MAX - 1) * 30, 100, 20 },
+            "Opacity",
+            TextFormat("%5.2f", characterData->opacities[characterData->active]),
+            &characterData->opacities[characterData->active],
+            0.0f, 1.0f);
+    }
 }
 
 static inline void GuiScrubberSettings(
@@ -3884,6 +3928,8 @@ static void ApplicationUpdate(void* voidApplicationState)
             cameraTarget,
             (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(0)) ? GetMouseDelta().x : 0.0f,
             (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(0)) ? GetMouseDelta().y : 0.0f,
+            (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(1)) ? GetMouseDelta().x : 0.0f,
+            (IsKeyDown(KEY_LEFT_CONTROL) && IsMouseButtonDown(1)) ? GetMouseDelta().y : 0.0f,
             GetMouseWheelMove(),
             GetFrameTime());
     }
@@ -4238,7 +4284,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         // Camera Settings
 
-        GuiOrbitCamera(&app->camera, &app->characterData);
+        GuiOrbitCamera(&app->camera, &app->characterData, app->argc, app->argv);
 
         // Characters
 
