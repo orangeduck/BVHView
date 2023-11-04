@@ -13,9 +13,9 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         INCLUDE_DIR = -I ./ -I $(RAYLIB_DIR)/raylib/src -I $(RAYLIB_DIR)/raygui/src
         LIBRARY_DIR = -L $(RAYLIB_DIR)/raylib/src
         ifeq ($(BUILD_MODE),RELEASE)
-            CFLAGS ?= $(DEFINES) -Wall -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR)
+            CFLAGS ?= $(DEFINES) -Wall -Wno-format-truncation -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR)
         else
-            CFLAGS ?= $(DEFINES) -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR)
+            CFLAGS ?= $(DEFINES) -Wall -Wno-format-truncation -g $(INCLUDE_DIR) $(LIBRARY_DIR)
         endif
         LIBS = -lraylib -lGL -lm
     endif

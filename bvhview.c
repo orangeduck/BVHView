@@ -1599,6 +1599,18 @@ static inline void NearestPointBetweenLineSegments(
     *nearestTime0 = NearestPointOnLineSegment(line0Start, line0Vec, Vector3Add(line1Start, Vector3Scale(line1Vec, *nearestTime1)));
 }
 
+// Returns the time parameter for a line segment closest to the plane
+static inline float NearestPointBetweenLineSegmentAndPlane(Vector3 lineStart, Vector3 lineVector, Vector3 planePosition, Vector3 planeNormal)
+{
+    float denom = Vector3DotProduct(planeNormal, lineVector);
+    if (fabs(denom) < 1e-8f)
+    {
+        return 0.5f;
+    }
+  
+    return Saturate(Vector3DotProduct(Vector3Subtract(planePosition, lineStart), planeNormal) / denom);
+}
+
 // Returns the time parameter for a line segment closest to the ground plane
 static inline float NearestPointBetweenLineSegmentAndGroundPlane(Vector3 lineStart, Vector3 lineVector)
 {
@@ -1718,18 +1730,11 @@ static inline void NearestPointBetweenLineSegmentAndGroundSegment(
         *nearestPointOnGround = nearestPointOnEdge3;
         return;
     }
-}
-
-// Returns the time parameter for a line segment closest to the plane
-static inline float NearestPointBetweenLineSegmentAndPlane(Vector3 lineStart, Vector3 lineVector, Vector3 planePosition, Vector3 planeNormal)
-{
-    float denom = Vector3DotProduct(planeNormal, lineVector);
-    if (fabs(denom) < 1e-8f)
-    {
-        return 0.5f;
-    }
-  
-    return Saturate(Vector3DotProduct(Vector3Subtract(planePosition, lineStart), planeNormal) / denom);
+    
+    assert(false);
+    *nearestTimeOnLine = nearestTimeOnLine0;
+    *nearestPointOnGround = nearestPointOnEdge1;
+    return;
 }
 
 static inline Vector3 ProjectPointOntoSweptLine(Vector3 sweptLineStart, Vector3 sweptLineVec, Vector3 sweptLineSweepVec, Vector3 position)
@@ -1779,11 +1784,26 @@ static inline void NearestPointBetweenLineSegmentAndSweptLine(
 
     float nearestTimeOnLine0 = NearestPointBetweenLineSegmentAndPlane(lineStart, lineVec, sweptLineStart, planeNormal);
     Vector3 nearestPointOnLine0 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine0));
-    Vector3 nearestPointOnSweptLine0 = ProjectPointOntoSweptLine(
-        sweptLineStart, 
-        sweptLineVec, 
-        sweptLineSweepVector, 
-        nearestPointOnLine0);
+    
+    Vector3 nearestPointOnSweptLine0;
+    
+    if (Vector3Length(sweptLineVec) > 1e-8f)
+    {
+        nearestPointOnSweptLine0 = ProjectPointOntoSweptLine(
+            sweptLineStart, 
+            sweptLineVec, 
+            sweptLineSweepVector, 
+            nearestPointOnLine0);
+    }
+    else
+    {
+        float nearestTimeOnSweptLine = NearestPointOnLineSegment(
+            sweptLineStart,
+            sweptLineSweepVector,
+            nearestPointOnLine0);
+            
+        nearestPointOnSweptLine0 = Vector3Add(sweptLineStart, Vector3Scale(sweptLineSweepVector, nearestTimeOnSweptLine));
+    }
     
     float distance0 = Vector3Distance(nearestPointOnLine0, nearestPointOnSweptLine0);
     
@@ -1927,15 +1947,18 @@ static inline float SphereDirectionalOcclusionLookup(float phi, float theta, flo
 }
 
 static inline float SphereDirectionalOcclusion(
-    Vector3 pos, Vector3 sphere, float radius,
-    Vector3 coneDir, float coneAngle)
+    Vector3 pos, 
+    Vector3 sphere, 
+    float radius,
+    Vector3 coneDir, 
+    float coneAngle)
 {
     Vector3 occluder = Vector3Subtract(sphere, pos);
     float occluderLen2 = Vector3DotProduct(occluder, occluder);
     Vector3 occluderDir = Vector3Scale(occluder, 1.0f / Max(sqrtf(occluderLen2), 1e-8f));
 
-    float phi = acosf(Vector3DotProduct(occluderDir, Vector3Negate(coneDir)));
-    float theta = acosf(sqrtf(occluderLen2 / (Square(radius) + occluderLen2)));
+    float phi = acosf(Clamp(Vector3DotProduct(occluderDir, Vector3Negate(coneDir)), -1.0f, 1.0f));
+    float theta = acosf(Clamp(sqrtf(occluderLen2 / (Square(radius) + occluderLen2)), -1.0f, 1.0f));
     
     return SphereDirectionalOcclusionLookup(phi, theta, coneAngle);
 }
@@ -1970,7 +1993,7 @@ static inline float CapsuleDirectionalOcclusion(
     Vector3 ba = capVec;
     Vector3 pa = Vector3Subtract(capStart, pos);
     Vector3 cba = Vector3Subtract(Vector3Scale(Vector3Negate(coneDir), Vector3DotProduct(Vector3Negate(coneDir), ba)), ba);
-    float t = Saturate(Vector3DotProduct(pa, cba) / (Vector3DotProduct(cba, cba)));
+    float t = Saturate(Vector3DotProduct(pa, cba) / Max(Vector3DotProduct(cba, cba), 1e-8f));
 
     return SphereDirectionalOcclusion(pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
 }
@@ -3538,7 +3561,7 @@ static inline void GuiCharacterData(
         bool bvhSelected = i == characterData->active;
         GuiToggle((Rectangle){ 30, 270 + i * 30, 140, 20 }, bvhNameShort, &bvhSelected);
 
-        if (bvhSelected && characterData->active != i)
+        if (bvhSelected && (characterData->active != i))
         {
             characterData->active = i;
             ScrubberSettingsClamp(scrubberSettings, characterData);
