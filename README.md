@@ -2,27 +2,29 @@
 
 BVHView is a simple .bvh animation file format viewer built using raylib.
 
-[Project Page]() - [Web Demo]()
+* [Project Page](https://theorangeduck.com/page/bvhview)
+* [Web Demo](https://theorangeduck.com/media/uploads/BVHView/bvhview.html)
 
 TODO: Video
 
 # Download
 
-* [Prebuild Windows]()
+* [Windows Binary](https://theorangeduck.com/media/uploads/BVHView/bvhview.zip)
 
 # Building
 
 ## Windows
 
-Make sure [raylib](https://www.raylib.com/) is installed in `C:/raylib`.
+Download [raylib](https://github.com/raysan5/raylib) into `C:/raylib/raylib`.
 
-Run `make` to build a debug version or `make BUILD_MODE=RELEASE` to build a 
-release version with optimization and no console window alongside.
+Download [raygui](https://github.com/raysan5/raygui) into `C:/raylib/raygui`.
+
+Build raylib by going to `C:/raylib/raylib/src` and running `make`.
+
+Download `BVHView` and run `make` in the main directory to build `bvhview.exe`.
+
+To build a release version with optimization and no console window alongside run `make BUILD_MODE=RELEASE` in the main directory instead.
 
 ## Linux
-
-TODO
-
-## Mac
 
 TODO

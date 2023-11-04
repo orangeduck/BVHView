@@ -4,19 +4,20 @@
 *
 *  This is a simple viewer for the .bvh animation file format made using raylib. For more
 *  info on the motivation behind it and information on features and documentation please 
-*  see TODO.
+*  see: https://theorangeduck.com/page/bvhview
 *
-*  The program itself essentially contains the following components:
+*  The program itself essentially consists of the following components:
 *
-*     - A parser for the BVH file format into some basic data structure
-*     - Functions for sampling bone transforms at a given frame into a buffer of skeleton 
-        bone transforms.
-*     - Functions for constructing a set of Capsules representing these bones from BVH data 
-*       and skeleton transform data.
-*     - A (relatively) efficient and high quality method of rendering capsules that includes 
-*       nice lighting and soft shadows.
+*     - A parser for the BVH file format
+*     - A set of functions for sampling data from particular frames of the BVH file.
+*     - A set of functions for creating capsules from the skeleton structure of the BVH data 
+*       and animation transforms.
+*     - A (relatively) efficient and high quality shader for rendering capsules that includes 
+*       nice lighting, soft shadows, and some CPU based culling to limit the amount of work
+*       required by the GPU.
 *
-*  Coding style is roughly meant to follow the rest of raylib.
+*  Coding style is roughly meant to follow the rest of raylib and community contributions
+*  are very welcome.
 *
 *******************************************************************************************/
 
@@ -25,6 +26,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <float.h>
 
 #include "raylib.h"
 #include "rcamera.h"
@@ -38,18 +40,18 @@
 
 #if defined(PLATFORM_WEB)
 #include <emscripten/emscripten.h>
-static int errno;
 #endif
 
 //----------------------------------------------------------------------------------
 // Profiling
 //----------------------------------------------------------------------------------
 
-#define ENABLE_PROFILE
-
-#if defined(ENABLE_PROFILE)
+// Un-comment to enable profiling
+//#define ENABLE_PROFILE
 
 // Profiling only available on Windows
+#if defined(ENABLE_PROFILE) && defined(_WIN32)
+
 #include <profileapi.h>
 
 enum
@@ -57,11 +59,11 @@ enum
     // Max number of profile records (profiled code locations) 
     PROFILE_RECORD_MAX = 512,
     
-    // Maximum number of timer samples to record in buffer
+    // Maximum number of timer samples per record
     PROFILE_RECORD_SAMPLE_MAX = 128,
 };
 
-// Record for a profiled code location. Contains a cyclic buffer of start and end times.
+// A single record for a profiled code location with a cyclic buffer of start and end times.
 typedef struct 
 {
     const char* name;
@@ -75,7 +77,7 @@ typedef struct
     
 } ProfileRecord;
 
-// Set of all profiled code locations
+// Structure containing space for all profiled code locations
 typedef struct
 {
     uint32_t num;
@@ -95,7 +97,7 @@ static void ProfileRecordDataInit()
     memset(globalProfileRecords.records, 0, sizeof(ProfileRecord*) * PROFILE_RECORD_MAX);
 }
 
-// If uninitialized, then initialize the profile record and store the start time
+// If uninitialized, then initialize the profile record, then store the start time
 static inline void ProfileRecordBegin(ProfileRecord* record, const char* name)
 {
     if (!record->name && globalProfileRecords.num < PROFILE_RECORD_MAX)
@@ -110,7 +112,7 @@ static inline void ProfileRecordBegin(ProfileRecord* record, const char* name)
     QueryPerformanceCounter(&record->samples[record->idx].start);
 }
 
-// Store the end time and increment the 
+// Store the end time and increment the record sample num
 static inline void ProfileRecordEnd(ProfileRecord* record)
 {
     QueryPerformanceCounter(&record->samples[record->idx].end);
@@ -118,7 +120,7 @@ static inline void ProfileRecordEnd(ProfileRecord* record)
     record->num++;
 }
 
-// Keeps Rolling Average of Profile Record durations in microseconds
+// Tickers record a rolling average of Profile Record durations in microseconds
 typedef struct
 {
     uint64_t unitScale; 
@@ -176,18 +178,20 @@ static inline void ProfileTickersUpdate()
     }
 }
 
-#define PROFILE_INIT() ProfileRecordDataInit(); ProfileTickersInit();
+#define PROFILE_INIT() ProfileRecordDataInit(); 
 #define PROFILE_BEGIN(NAME) static ProfileRecord __PROFILE_RECORD_##NAME; ProfileRecordBegin(&__PROFILE_RECORD_##NAME, #NAME);
 #define PROFILE_END(NAME) ProfileRecordEnd(&__PROFILE_RECORD_##NAME);
-#define PROFILE_UPDATE() ProfileTickersUpdate()
+
+#define PROFILE_TICKERS_INIT() ProfileTickersInit();
+#define PROFILE_TICKERS_UPDATE() ProfileTickersUpdate()
 
 #else
-
 #define PROFILE_INIT() 
 #define PROFILE_BEGIN(NAME) 
 #define PROFILE_END(NAME) 
-#define PROFILE_UPDATE()
 
+#define PROFILE_TICKERS_INIT()
+#define PROFILE_TICKERS_UPDATE()
 #endif
 
 //----------------------------------------------------------------------------------
@@ -229,7 +233,7 @@ static inline int MinInt(int x, int y)
     return x < y ? x : y;
 }
 
-// This is a save version of QuaternionBetween which returns a 180 deg rotation
+// This is a safe version of QuaternionBetween which returns a 180 deg rotation
 // at the singularity where vectors are facing exactly in opposite directions
 static inline Quaternion QuaternionBetween(Vector3 p, Vector3 q)
 {
@@ -350,7 +354,7 @@ static inline Quaternion QuaternionInterpolateCubic(Quaternion r0, Quaternion r1
     return QuaternionHermite(r1, r2, v1, v2, alpha);
 }
 
-// Frustum culling based off https://github.com/JeffM2501/raylibExtras
+// Frustum culling (based off https://github.com/JeffM2501/raylibExtras)
 
 typedef struct
 {
@@ -423,7 +427,7 @@ static inline bool FrustumContainsSphere(Frustum frustum, Vector3 position, floa
 // Command Line Args
 //----------------------------------------------------------------------------------
 
-// Finds an argument on the command line with the given name (in the format "--argName=argValue") and returns the value as a string
+// Finds an argument on the command line with the given name (in the format "--argName=argValue") and returns the argValue as a string
 static inline char* ArgFind(int argc, char** argv, const char* name)
 {
     for (int i = 1; i < argc; i++)
@@ -592,8 +596,8 @@ enum
     PARSER_ERR_MAX = 512,
 };
 
-// Simple parser that keeps track of rows, and cols in a string and so can provide
-// slightly nicer error messages.
+// Simple parser that keeps track of rows, and cols in a string and so can provide slightly 
+// nicer error messages. Has ability to peek at next character and advance the input
 typedef struct {
 
     const char* filename;
@@ -605,6 +609,7 @@ typedef struct {
 
 } Parser;
 
+// Initialize the Parser
 static inline void ParserInit(Parser* par, const char* filename, const char* data)
 {
     par->filename = filename;
@@ -615,26 +620,31 @@ static inline void ParserInit(Parser* par, const char* filename, const char* dat
     par->err[0] = '\0';
 }
 
+// Peek at the next character in the stream
 static inline char ParserPeek(const Parser* par)
 {
     return par->data[par->offset];
 }
 
+// Peek forward N steps in the stream. Does not check the stream is long enough.
 static inline char ParserPeekForward(const Parser* par, int steps)
 {
     return par->data[par->offset + steps];
 }
 
+// Checks the current character matches the given input
 static inline bool ParserMatch(const Parser* par, char match)
 {
     return match == par->data[par->offset];
 }
 
+// Checks the current character matches one of the given characters
 static inline bool ParserOneOf(const Parser* par, const char* matches)
 {
     return strchr(matches, par->data[par->offset]);
 }
 
+// Checks the following characters in the stream match the prefix (in a caseless way)
 static inline bool ParserStartsWithCaseless(const Parser* par, const char* prefix)
 {
     const char* start = par->data + par->offset;
@@ -648,6 +658,7 @@ static inline bool ParserStartsWithCaseless(const Parser* par, const char* prefi
     return true;
 }
 
+// Advances the stream forward one
 static inline void ParserInc(Parser* par)
 {
     if (par->data[par->offset] == '\n')
@@ -663,15 +674,17 @@ static inline void ParserInc(Parser* par)
     par->offset++;
 }
 
+// Advances the stream forward "num" characters
 static inline void ParserAdvance(Parser* par, int num)
 {
     for (int i = 0; i < num; i++) { ParserInc(par); }
 }
 
-static char parserCharName[2];
-
+// Gets the human readable name of a particular character
 static inline char* ParserCharName(char c)
 {
+    static char parserCharName[2];
+
     switch (c)
     {
         case '\0': return "end of file";
@@ -688,6 +701,7 @@ static inline char* ParserCharName(char c)
     }
 }
 
+// Prints a formatted error to the parser error buffer
 #define ParserError(par, fmt, ...) \
     snprintf(par->err, PARSER_ERR_MAX, "%s:%i:%i: error: " fmt, par->filename, par->row, par->col, ##__VA_ARGS__)
 
@@ -937,6 +951,9 @@ static bool BVHParseChannel(char* channel, Parser* par)
         return false;
     }
 
+    // Here we are safe to peek forward an extra character since we've already
+    // checked the current character is not the null terminator.
+
     if (ParserPeek(par) == 'X' && ParserPeekForward(par, 1) == 'p')
     {
         return BVHParseChannelEnum(channel, par, "Xposition", CHANNEL_X_POSITION);
@@ -1176,7 +1193,8 @@ static inline void TransformDataInit(TransformData* data)
     data->globalRotations = NULL;
 }
 
-// Resize the transform buffer for the given BVH data
+// Resize the transform buffer according to the given BVH data and record the joint
+// parents and end-sites.
 static inline void TransformDataResize(TransformData* data, BVHData* bvh)
 {
     data->jointCount = bvh->jointCount;
@@ -1204,9 +1222,10 @@ static inline void TransformDataFree(TransformData* data)
     free(data->globalRotations);
 }
 
-// Sample joint transforms from a particular frame of a BVH file
+// Sample joint transforms from a given frame of the BVH file and with a given scale
 static void TransformDataSampleFrame(TransformData* data, BVHData* bvh, int frame, float scale)
 {
+    // Clamp the frame index in range.
     frame = frame < 0 ? 0 : frame >= bvh->frameCount ? bvh->frameCount - 1 : frame;
 
     int offset = 0;
@@ -1359,33 +1378,54 @@ enum
 // All the data required for all of the characters we want to have in the scene
 typedef struct {
 
+    // Total number of characters
     int count;
+    
+    // Character which is "active" or selected
     int active;
 
+    // Character BVH Data
     BVHData bvhData[CHARACTERS_MAX];
+    
+    // Scales of each character
     float scales[CHARACTERS_MAX];
+    
+    // Names of each character
     char names[CHARACTERS_MAX][128];
+    
+    // Automatic scaling for each character
     float autoScales[CHARACTERS_MAX];
+    
+    // Color of each character
     Color colors[CHARACTERS_MAX];
+    
+    // Opacity of each character
     float opacities[CHARACTERS_MAX];
+    
+    // Maximum capsule radius of each character
     float radii[CHARACTERS_MAX];
+    
+    // Original file path for each character
     char filePaths[CHARACTERS_MAX][512];
-
+    
+    // Transform buffers for each character
     TransformData xformData[CHARACTERS_MAX];
     TransformData xformTmp0[CHARACTERS_MAX];
     TransformData xformTmp1[CHARACTERS_MAX];
     TransformData xformTmp2[CHARACTERS_MAX];
     TransformData xformTmp3[CHARACTERS_MAX];
-
+    
+    // Joint combo string for each character
     char* jointNamesCombo[CHARACTERS_MAX];
 
+    // If the color picker is active
     bool colorPickerActive;
 
 } CharacterData;
 
 // Initializes all the CharacterData to a safe state
 static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
-{
+{  
     data->count = 0;
     data->active = 0;
 
@@ -1395,6 +1435,12 @@ static inline void CharacterDataInit(CharacterData* data, int argc, char** argv)
     data->colors[3] = ArgColor(argc, argv, "-color3", LIME);
     data->colors[4] = ArgColor(argc, argv, "-color4", VIOLET);
     data->colors[5] = ArgColor(argc, argv, "-color5", MAROON);
+
+    srand(1234);
+    for (int i = 6; i < CHARACTERS_MAX; i++)
+    {
+        data->colors[i] = (Color){ rand() % 255, rand() % 255, rand() % 255  };
+    }
 
     for (int i = 0; i < CHARACTERS_MAX; i++)
     {
@@ -1673,6 +1719,152 @@ static inline void NearestPointBetweenLineSegmentAndGroundSegment(
     }
 }
 
+// Returns the time parameter for a line segment closest to the plane
+static inline float NearestPointBetweenLineSegmentAndPlane(Vector3 lineStart, Vector3 lineVector, Vector3 planePosition, Vector3 planeNormal)
+{
+    float denom = Vector3DotProduct(planeNormal, lineVector);
+    if (fabs(denom) < 1e-8f)
+    {
+        return 0.5f;
+    }
+  
+    return Saturate(Vector3DotProduct(Vector3Subtract(planePosition, lineStart), planeNormal) / denom);
+}
+
+static inline Vector3 ProjectPointOntoSweptLine(Vector3 sweptLineStart, Vector3 sweptLineVec, Vector3 sweptLineSweepVec, Vector3 position)
+{
+    Vector3 w = Vector3Subtract(position, sweptLineStart);
+    Vector3 u = Vector3Normalize(sweptLineVec);
+    Vector3 v = Vector3Normalize(sweptLineSweepVec);
+    
+    // x (u * u) + y (u * v) = w * u
+    // x (v * u) + y (v * v) = w * v
+    
+    // Solved using Cramer's Rule in 2D
+    float a1 = Vector3DotProduct(u, u);
+    float b1 = Vector3DotProduct(u, v);
+    float c1 = Vector3DotProduct(w, u);
+    float a2 = Vector3DotProduct(v, u);
+    float b2 = Vector3DotProduct(v, v);
+    float c2 = Vector3DotProduct(w, v);
+    
+    float x = ((c1 * b2) - (b1 * c2)) / (a1 * b2 - b1 * a2);
+    float y = (c1 - x * a1) / b1;
+    
+    x = Clamp(x, 0.0f, Vector3Length(sweptLineVec));
+    y = Clamp(y, 0.0f, Vector3Length(sweptLineSweepVec));
+    
+    return Vector3Add(sweptLineStart, Vector3Add(Vector3Scale(u, x), Vector3Scale(v, y)));
+}
+
+// Returns the time parameter and nearest point on between a line segment and swept line segment
+static inline void NearestPointBetweenLineSegmentAndSweptLine(
+    float* nearestTimeOnLine,
+    Vector3* nearestPointOnSweptLine,
+    Vector3 lineStart,
+    Vector3 lineEnd,
+    Vector3 sweptLineStart,
+    Vector3 sweptLineEnd,
+    Vector3 sweptLineSweepVector)
+{
+    Vector3 lineVec = Vector3Subtract(lineEnd, lineStart);
+    Vector3 sweptLineVec = Vector3Subtract(sweptLineEnd, sweptLineStart);
+   
+    Vector3 planeNormal = Vector3Length(sweptLineVec) < 1e-8f ? 
+        Vector3Normalize(Vector3CrossProduct((Vector3){ 0.0f, 1.0f, 0.0f }, sweptLineSweepVector)) :
+        Vector3Normalize(Vector3CrossProduct(sweptLineVec, sweptLineSweepVector));
+    
+    // Check Against Plane
+
+    float nearestTimeOnLine0 = NearestPointBetweenLineSegmentAndPlane(lineStart, lineVec, sweptLineStart, planeNormal);
+    Vector3 nearestPointOnLine0 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine0));
+    Vector3 nearestPointOnSweptLine0 = ProjectPointOntoSweptLine(
+        sweptLineStart, 
+        sweptLineVec, 
+        sweptLineSweepVector, 
+        nearestPointOnLine0);
+    
+    float distance0 = Vector3Distance(nearestPointOnLine0, nearestPointOnSweptLine0);
+    
+    // Check against three edges
+
+    Vector3 edgeStart1 = sweptLineStart;
+    Vector3 edgeEnd1 = Vector3Add(sweptLineStart, sweptLineSweepVector);
+    
+    Vector3 edgeStart2 = sweptLineEnd;
+    Vector3 edgeEnd2 = Vector3Add(sweptLineEnd, sweptLineSweepVector);
+    
+    Vector3 edgeStart3 = sweptLineStart;
+    Vector3 edgeEnd3 = sweptLineEnd;
+
+    float nearestTimeOnLine1, nearestTimeOnLine2, nearestTimeOnLine3;
+    float nearestTimeOnEdge1, nearestTimeOnEdge2, nearestTimeOnEdge3;
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine1,
+        &nearestTimeOnEdge1,
+        lineStart, lineEnd,
+        edgeStart1, edgeEnd1);
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine2,
+        &nearestTimeOnEdge2,
+        lineStart, lineEnd,
+        edgeStart2, edgeEnd2);
+
+    NearestPointBetweenLineSegments(
+        &nearestTimeOnLine3,
+        &nearestTimeOnEdge3,
+        lineStart, lineEnd,
+        edgeStart3, edgeEnd3);
+
+    Vector3 nearestPointOnLine1 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine1));
+    Vector3 nearestPointOnLine2 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine2));
+    Vector3 nearestPointOnLine3 = Vector3Add(lineStart, Vector3Scale(lineVec, nearestTimeOnLine3));
+    
+    Vector3 nearestPointOnSweptLine1 = Vector3Add(edgeStart1, Vector3Scale(Vector3Subtract(edgeEnd1, edgeStart1), nearestTimeOnEdge1));
+    Vector3 nearestPointOnSweptLine2 = Vector3Add(edgeStart2, Vector3Scale(Vector3Subtract(edgeEnd2, edgeStart2), nearestTimeOnEdge2));
+    Vector3 nearestPointOnSweptLine3 = Vector3Add(edgeStart3, Vector3Scale(Vector3Subtract(edgeEnd3, edgeStart3), nearestTimeOnEdge3));
+
+    float distance1 = Vector3Distance(nearestPointOnLine1, nearestPointOnSweptLine1);
+    float distance2 = Vector3Distance(nearestPointOnLine2, nearestPointOnSweptLine2);
+    float distance3 = Vector3Distance(nearestPointOnLine3, nearestPointOnSweptLine3);
+
+    if (distance0 <= distance1 && distance0 <= distance2 && distance0 <= distance3)
+    {
+        *nearestTimeOnLine = nearestTimeOnLine0;
+        *nearestPointOnSweptLine = nearestPointOnSweptLine0;
+        return;
+    }
+
+    if (distance1 <= distance0 && distance1 <= distance2 && distance1 <= distance3)
+    {
+        *nearestTimeOnLine = nearestTimeOnLine1;
+        *nearestPointOnSweptLine = nearestPointOnSweptLine1;
+        return;
+    }
+
+    if (distance2 <= distance0 && distance2 <= distance1 && distance2 <= distance3)
+    {
+        *nearestTimeOnLine = nearestTimeOnLine2;
+        *nearestPointOnSweptLine = nearestPointOnSweptLine2;
+        return;
+    }
+
+    if (distance3 <= distance0 && distance3 <= distance1 && distance3 <= distance2)
+    {
+        *nearestTimeOnLine = nearestTimeOnLine3;
+        *nearestPointOnSweptLine = nearestPointOnSweptLine3;
+        return;
+    }
+    
+    // Unreachable
+    assert(false);
+    *nearestTimeOnLine = nearestTimeOnLine0;
+    *nearestPointOnSweptLine = nearestPointOnSweptLine0;
+    return;
+}
+
 // Analytical capsule and sphere occlusion functions taken from here:
 // https://www.shadertoy.com/view/3stcD4
 
@@ -1687,17 +1879,17 @@ static inline float SphereOcclusionLookup(float nlAngle, float h)
 {
     float nl = cosf(nlAngle);
     float h2 = h*h;
-
-    float res = Max(0.0, nl) / h2;
+    
+    float res = Max(nl, 0.0) / h2;
     float k2 = 1.0 - h2*nl*nl;
     if (k2 > 1e-4f)
     {
-        res = nl * acosf(-nl*sqrtf((h2 - 1.0f) / (1.0f - nl*nl))) - sqrtf(k2*(h2 - 1.0f));
+        res = nl * acosf(Clamp(-nl*sqrtf((h2 - 1.0f) / Max(1.0f - nl*nl, 1e-8f)), -1.0f, 1.0f)) - sqrtf(k2*(h2 - 1.0f));
         res = (res / h2 + atanf(sqrt(k2 / (h2 - 1.0f)))) / PI;
     }
 
     float decay = Max(1.0f - (h - 1.0f) / ((float)AO_RATIO_MAX - 1.0f), 0.0f);
-
+    
     return 1.0f - res * decay;
 }
 
@@ -1705,7 +1897,7 @@ static inline float SphereOcclusion(Vector3 pos, Vector3 nor, Vector3 sph, float
 {
     Vector3 di = Vector3Subtract(sph, pos);
     float l = Vector3Length(di);
-    float nlAngle = acosf(Vector3DotProduct(nor, Vector3Scale(di, 1.0f / l)));
+    float nlAngle = acosf(Clamp(Vector3DotProduct(nor, Vector3Scale(di, 1.0f / Max(l, 1e-8f))), -1.0f, 1.0f));
     float h  = l < rad ? 1.0 : l / rad;
     return SphereOcclusionLookup(nlAngle, h);
 }
@@ -1747,18 +1939,21 @@ static inline float SphereDirectionalOcclusion(
     return SphereDirectionalOcclusionLookup(phi, theta, coneAngle);
 }
 
+// Get the start point of the capsule line segment
 static inline Vector3 CapsuleStart(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     return Vector3Add(capsulePosition,
         Vector3RotateByQuaternion((Vector3){+capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
 }
 
+// Get the end point of the capsule line segment
 static inline Vector3 CapsuleEnd(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     return Vector3Add(capsulePosition,
         Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation));
 }
 
+// Get the vector from the start to the end of the capsule line segment
 static inline Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleRotation, float capsuleHalfLength)
 {
     Vector3 capsuleStart = CapsuleStart(capsulePosition, capsuleRotation, capsuleHalfLength);
@@ -1767,18 +1962,13 @@ static inline Vector3 CapsuleVector(Vector3 capsulePosition, Quaternion capsuleR
         Vector3RotateByQuaternion((Vector3){-capsuleHalfLength, 0.0f, 0.0f}, capsuleRotation)), capsuleStart);
 }
 
-static inline Vector3 CapsuleProjectOnLight(Vector3 capVec, Vector3 coneDir)
-{
-    return Vector3Subtract(Vector3Scale(Vector3Negate(coneDir), Vector3DotProduct(Vector3Negate(coneDir), capVec)), capVec);
-}
-
 static inline float CapsuleDirectionalOcclusion(
     Vector3 pos, Vector3 capStart, Vector3 capVec,
     float capRadius, Vector3 coneDir, float coneAngle)
 {
     Vector3 ba = capVec;
     Vector3 pa = Vector3Subtract(capStart, pos);
-    Vector3 cba = CapsuleProjectOnLight(ba, coneDir);
+    Vector3 cba = Vector3Subtract(Vector3Scale(Vector3Negate(coneDir), Vector3DotProduct(Vector3Negate(coneDir), ba)), ba);
     float t = Saturate(Vector3DotProduct(pa, cba) / (Vector3DotProduct(cba, cba)));
 
     return SphereDirectionalOcclusion(pos, Vector3Add(capStart, Vector3Scale(ba, t)), capRadius, coneDir, coneAngle);
@@ -2030,8 +2220,7 @@ static void CapsuleDataAppendFromTransformData(CapsuleData* data, TransformData*
     }
 }
 
-// Here we gather up all of the capsules which are casting ambient occlusion on a ground segment.
-// This works by effectively TODO
+// Gather all of the capsules which are potentially casting ambient occlusion on a ground segment.
 static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition)
 {
     data->aoCapsuleCount = 0;
@@ -2042,6 +2231,7 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
         float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
         
+        // Check if bounding spheres are more than AO_RATIO_MAX away from each other
         if (Vector3Distance(groundSegmentPosition, capsulePosition) - sqrtf(2.0f) > capsuleHalfLength + AO_RATIO_MAX * capsuleRadius)
         {
             continue;
@@ -2064,11 +2254,13 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
     
         Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
         
+        // Check if the nearest point on the ground is more than AO_RATIO_MAX away
         if (Vector3Distance(groundPoint, capsulePoint) > AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
         
+        // Compute the actual occlusion for the closest point on the ground
         float capsuleOcclusion = Vector3Distance(groundPoint, capsulePoint) < capsuleRadius ? 0.0f :
             SphereOcclusion(groundPoint, (Vector3){ 0.0f, 1.0f, 0.0f }, capsulePoint, capsuleRadius);
 
@@ -2090,7 +2282,7 @@ static void CapsuleDataUpdateAOCapsulesForGroundSegment(CapsuleData* data, Vecto
     }
 }
 
-// TODO
+// Gather all of the capsules which are potentially casting ambient occlusion on another capsule.
 static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsuleIndex)
 {
     Vector3 queryCapsulePosition = data->capsulePositions[capsuleIndex];
@@ -2111,7 +2303,9 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
         float capsuleRadius = data->capsuleRadii[i];
         float capsuleHalfLength = data->capsuleHalfLengths[i];
 
-        if (Vector3Distance(queryCapsulePosition, capsulePosition) - queryCapsuleHalfLength - queryCapsuleRadius > capsuleHalfLength + AO_RATIO_MAX * capsuleRadius)
+        // Check if the bounding sphers are more than AO_RATIO_MAX away from each other
+        if (Vector3Distance(queryCapsulePosition, capsulePosition) - queryCapsuleHalfLength - queryCapsuleRadius > 
+            capsuleHalfLength + AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
@@ -2133,14 +2327,15 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
         Vector3 capsulePoint = Vector3Add(capsuleStart, Vector3Scale(capsuleVector, capsuleTime));
         Vector3 queryPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, queryTime));
         
+        // Check if the nearest points on the two capsules are more than AO_RATIO_MAX away
         if (Vector3Distance(queryPoint, capsulePoint) - queryCapsuleRadius > AO_RATIO_MAX * capsuleRadius)
         {
             continue;
         }
-      
+        
+        // Compute the actual occlusion at the nearest point
         Vector3 surfaceNormal = Vector3Normalize(Vector3Subtract(capsulePoint, queryPoint));
         Vector3 surfacePoint = Vector3Add(queryPoint, Vector3Scale(surfaceNormal, queryCapsuleRadius));
-        
         float capsuleOcclusion = Vector3Distance(queryPoint, capsulePoint) <= queryCapsuleRadius + capsuleRadius ? 0.0f :
             SphereOcclusion(surfacePoint, surfaceNormal, capsulePoint, capsuleRadius);
 
@@ -2162,7 +2357,7 @@ static void CapsuleDataUpdateAOCapsulesForCapsule(CapsuleData* data, int capsule
     }
 }
 
-// TODO
+// Gather all of the capsules which are potentially casting shadows on a ground segment.
 static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, Vector3 groundSegmentPosition, Vector3 lightDir, float lightConeAngle)
 {
     Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
@@ -2174,11 +2369,12 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         Vector3 capsulePosition = data->capsulePositions[i];
         float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
-      
+        
         float midRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsulePosition, lightRay);
         Vector3 groundCapsuleMid = Vector3Add(capsulePosition, Vector3Scale(lightRay, midRayTime));
-        float maxRatio = 4.0f;
+        float maxRatio = 4.0f; // This is a kind of fudge-factor as the soft shadow don't have a fixed falloff
 
+        // Check if the ground segment is more than maxRatio away from the shadow point at the center of the capsule 
         if (Vector3Distance(groundSegmentPosition, groundCapsuleMid) - sqrtf(2.0f) > capsuleHalfLength + maxRatio * capsuleRadius)
         {
             continue;
@@ -2189,6 +2385,8 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
         Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
 
+        // Find the projected shadow point for the capsule start and end points
+        // I think for the ground the darkest part of the shadow is always one of these
         float startRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleStart, lightRay);
         float endRayTime = NearestPointBetweenLineSegmentAndGroundPlane(capsuleEnd, lightRay);
 
@@ -2200,12 +2398,14 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
         groundCapsuleEnd.x = Clamp(groundCapsuleEnd.x, groundSegmentPosition.x - 1.0f, groundSegmentPosition.x + 1.0f);
         groundCapsuleEnd.z = Clamp(groundCapsuleEnd.z, groundSegmentPosition.z - 1.0f, groundSegmentPosition.z + 1.0f);
         
+        // Check if both points are more than maxRatio away from the ground segment
         if (Vector3Distance(groundSegmentPosition, groundCapsuleStart) - sqrtf(2.0f) > maxRatio * capsuleRadius &&
             Vector3Distance(groundSegmentPosition, groundCapsuleEnd) - sqrtf(2.0f) > maxRatio * capsuleRadius)
         {
             continue;
         }
         
+        // Compute the actual occlusion at both points and take the min
         float capsuleOcclusion = Min(
             CapsuleDirectionalOcclusion(groundCapsuleStart, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle),
             CapsuleDirectionalOcclusion(groundCapsuleEnd, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle));
@@ -2228,18 +2428,18 @@ static void CapsuleDataUpdateShadowCapsulesForGroundSegment(CapsuleData* data, V
     }
 }
 
-// TODO
+// Gather all of the capsules which are potentially casting shadows on another capsule.
 static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int capsuleIndex, Vector3 lightDir, float lightConeAngle)
 {
     Vector3 lightRay = Vector3Scale(lightDir, 10.0f);
     
     Vector3 queryCapsulePosition = data->capsulePositions[capsuleIndex];
-    float queryCapsuleHalfLife = data->capsuleHalfLengths[capsuleIndex];
+    float queryCapsuleHalfLength = data->capsuleHalfLengths[capsuleIndex];
     float queryCapsuleRadius = data->capsuleRadii[capsuleIndex];
     Quaternion queryCapsuleRotation = data->capsuleRotations[capsuleIndex];
-    Vector3 queryCapsuleStart = CapsuleStart(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLife);
-    Vector3 queryCapsuleEnd = CapsuleEnd(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLife);
-    Vector3 queryCapsuleVector = CapsuleVector(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLife);
+    Vector3 queryCapsuleStart = CapsuleStart(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLength);
+    Vector3 queryCapsuleEnd = CapsuleEnd(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLength);
+    Vector3 queryCapsuleVector = CapsuleVector(queryCapsulePosition, queryCapsuleRotation, queryCapsuleHalfLength);
 
     data->shadowCapsuleCount = 0;
 
@@ -2251,19 +2451,17 @@ static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int cap
         float capsuleHalfLength = data->capsuleHalfLengths[i];
         float capsuleRadius = data->capsuleRadii[i];
         
-        float midRayTime, midRayQueryTime;
-        NearestPointBetweenLineSegments(
-            &midRayTime,
-            &midRayQueryTime,
+        // Find the closest point between the capsule and the ray cast from the center of the casting capsule
+        float midRayTime = NearestPointOnLineSegment(
             capsulePosition,
-            Vector3Add(capsulePosition, lightRay),
-            queryCapsuleStart,
-            queryCapsuleEnd);
+            lightRay,
+            queryCapsulePosition);
         
         Vector3 capsuleMid = Vector3Add(capsulePosition, Vector3Scale(lightRay, midRayTime));
         float maxRatio = 4.0f;
-
-        if (Vector3Distance(queryCapsulePosition, capsuleMid) - queryCapsuleHalfLife - queryCapsuleRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        
+        // Check if this is greater than maxRatio away
+        if (Vector3Distance(queryCapsulePosition, capsuleMid) - queryCapsuleHalfLength - queryCapsuleRadius > capsuleHalfLength + maxRatio * capsuleRadius)
         {
             continue;
         }
@@ -2273,41 +2471,32 @@ static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int cap
         Vector3 capsuleEnd = CapsuleEnd(capsulePosition, capsuleRotation, capsuleHalfLength);
         Vector3 capsuleVector = CapsuleVector(capsulePosition, capsuleRotation, capsuleHalfLength);
         
-        // This isn't 100% accurate but it will do for now...
-
-        float startRayTime, startRayQueryTime;
-        NearestPointBetweenLineSegments(
-            &startRayTime,
-            &startRayQueryTime,
+        // Find the nearest point between the capsule and the swept line of the casting capsule
+        float queryCapsuleTime;
+        Vector3 nearestRayPoint;
+        NearestPointBetweenLineSegmentAndSweptLine(
+            &queryCapsuleTime,
+            &nearestRayPoint,
+            queryCapsuleStart,
+            queryCapsuleEnd,
             capsuleStart,
-            Vector3Add(capsuleStart, lightRay),
-            queryCapsuleStart,
-            queryCapsuleEnd);
-
-        float endRayTime, endRayQueryTime;
-        NearestPointBetweenLineSegments(
-            &endRayTime,
-            &endRayQueryTime,
             capsuleEnd,
-            Vector3Add(capsuleEnd, lightRay),
-            queryCapsuleStart,
-            queryCapsuleEnd);
-
-        Vector3 rayStartPoint = Vector3Add(capsuleStart, Vector3Scale(lightRay, startRayTime));
-        Vector3 rayEndPoint = Vector3Add(capsuleEnd, Vector3Scale(lightRay, endRayTime));
-
-        Vector3 queryStartPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, startRayQueryTime));
-        Vector3 queryEndPoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, endRayQueryTime));
+            lightRay);
         
-        Vector3 surfaceStartNormal = Vector3Normalize(Vector3Subtract(rayStartPoint, queryStartPoint));
-        Vector3 surfaceStartPoint = Vector3Add(queryStartPoint, Vector3Scale(surfaceStartNormal, queryCapsuleRadius));
+        Vector3 queryCapsulePoint = Vector3Add(queryCapsuleStart, Vector3Scale(queryCapsuleVector, queryCapsuleTime));
+        
+        // If this distance is greater than maxRatio away then skip
+        if (Vector3Distance(queryCapsulePoint, nearestRayPoint) - queryCapsuleRadius > capsuleHalfLength + maxRatio * capsuleRadius)
+        {
+            continue;
+        }
+        
+        Vector3 surfaceNormal = Vector3Normalize(Vector3Subtract(nearestRayPoint, queryCapsulePoint));
+        Vector3 surfacePoint = Vector3Add(queryCapsulePoint, Vector3Scale(surfaceNormal, queryCapsuleRadius));
 
-        Vector3 surfaceEndNormal = Vector3Normalize(Vector3Subtract(rayEndPoint, queryEndPoint));
-        Vector3 surfaceEndPoint = Vector3Add(queryEndPoint, Vector3Scale(surfaceEndNormal, queryCapsuleRadius));
-
-        float capsuleOcclusion = Min(
-            CapsuleDirectionalOcclusion(surfaceStartPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle),
-            CapsuleDirectionalOcclusion(surfaceEndPoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle));
+        // Find actual occlusion amount
+        float capsuleOcclusion = Vector3Distance(queryCapsulePoint, nearestRayPoint) <= queryCapsuleRadius + capsuleRadius ? 0.0f :
+            CapsuleDirectionalOcclusion(surfacePoint, capsuleStart, capsuleVector, capsuleRadius, lightDir, lightConeAngle);
         
         if (capsuleOcclusion < 0.99f)
         {
@@ -2327,6 +2516,7 @@ static void CapsuleDataUpdateShadowCapsulesForCapsule(CapsuleData* data, int cap
     }
 }
 
+// Resize so that we have enough capsules in the buffers for the given set of characters
 static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, CharacterData* characterData)
 {
     int totalJointCount = 0;
@@ -2355,6 +2545,7 @@ static inline void CapsuleDataUpdateForCharacters(CapsuleData* capsuleData, Char
   GLSL_DEFINE(PI) \
   #X
 
+// Vertex Shader
 static const char* shaderVS = GLSL(
 
 precision highp float;
@@ -2416,6 +2607,7 @@ void main()
 
 );
 
+// Fragment Shader
 static const char* shaderFS = GLSL(
 
 precision highp float;
@@ -2549,7 +2741,9 @@ float SphereOcclusion(in vec3 pos, in vec3 nor, in vec3 sph, in float rad)
 }
 
 float SphereDirectionalOcclusion(
-    in vec3 pos, in vec3 sphere, in float radius,
+    in vec3 pos, 
+    in vec3 sphere, 
+    in float radius,
     in vec3 coneDir)
 {
     vec3 occluder = sphere - pos;
@@ -2564,12 +2758,16 @@ float SphereDirectionalOcclusion(
 }
 
 float CapsuleOcclusion(
-    in vec3 pos, in vec3 nor,
-    in vec3 capStart, in vec3 capVec, in float radius)
+    in vec3 pos, 
+    in vec3 nor,
+    in vec3 capStart, 
+    in vec3 capVec, 
+    in float radius)
 {
     vec3 ba = capVec;
     vec3 pa = pos - capStart;
-    float t = Saturate(dot(pa, ba) / dot(ba, ba));
+    float l = dot(ba, ba);
+    float t = abs(l) < 1e-8f ? 0.0 : Saturate(dot(pa, ba) / l);
     return SphereOcclusion(pos, nor, capStart + t * ba, radius);
 }
 
@@ -2628,8 +2826,8 @@ void main()
             capsuleHalfLength,
             capsuleRadius,
             vec2(4.0, 4.0));
-
-       nor = CapsuleNormal(pos, capsuleStart, capsuleVector);
+        
+        nor = CapsuleNormal(pos, capsuleStart, capsuleVector);
     }
 
     // Compute sun shadow amount
@@ -2706,6 +2904,7 @@ void main()
 
 );
 
+// Structure containing all the uniform indices for the shader
 typedef struct
 {
     int isCapsule;
@@ -2749,6 +2948,7 @@ typedef struct
 
 } ShaderUniforms;
 
+// Lookup all shader uniform indices
 static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
 {
     uniforms->isCapsule = GetShaderLocation(shader, "isCapsule");
@@ -3402,17 +3602,15 @@ static inline void GuiScrubberSettings(
     int screenWidth,
     int screenHeight)
 {
-    // TODO: Make really center
-
     if (characterData->count == 0) { return; }
 
     float frameTime = characterData->bvhData[characterData->active].frameTime;
 
-    GuiGroupBox((Rectangle){ 40, screenHeight - 100, screenWidth - 80, 90 }, "Scrubber");
+    GuiGroupBox((Rectangle){ screenWidth / 2 - 600, screenHeight - 100, 1200, 90 }, "Scrubber");
 
-    GuiLabel((Rectangle){ 160, screenHeight - 80, 150, 20 }, TextFormat("Frame Time: %f", frameTime));
-    GuiCheckBox((Rectangle){ 290, screenHeight - 80, 20, 20 }, "Snap to Frame", &settings->frameSnap);
-    GuiComboBox((Rectangle){ 400, screenHeight - 80, 100, 20 }, "Nearest;Linear;Cubic", &settings->sampleMode);
+    GuiLabel((Rectangle){ screenWidth / 2 - 480, screenHeight - 80, 150, 20 }, TextFormat("Frame Time: %f", frameTime));
+    GuiCheckBox((Rectangle){ screenWidth / 2 - 350, screenHeight - 80, 20, 20 }, "Snap to Frame", &settings->frameSnap);
+    GuiComboBox((Rectangle){ screenWidth / 2 - 240, screenHeight - 80, 100, 20 }, "Nearest;Linear;Cubic", &settings->sampleMode);
 
     GuiToggle((Rectangle){ screenWidth / 2 - 25, screenHeight - 80, 50, 20 }, "Play", &settings->playing);
     GuiToggle((Rectangle){ screenWidth / 2 - 85, screenHeight - 80, 50, 20 }, "Loop", &settings->looping);
@@ -3432,7 +3630,7 @@ static inline void GuiScrubberSettings(
     int frame = ClampInt((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
 
     if (GuiValueBox(
-        (Rectangle){ 100, screenHeight - 80, 50, 20 },
+        (Rectangle){ screenWidth / 2 - 540, screenHeight - 80, 50, 20 },
         "Min   ", &settings->frameMinSelect, 0, settings->frameLimit, settings->frameMinEdit))
     {
         settings->frameMinEdit = !settings->frameMinEdit;
@@ -3444,7 +3642,7 @@ static inline void GuiScrubberSettings(
     }
 
     if (GuiValueBox(
-        (Rectangle){ screenWidth - 170, screenHeight - 80, 50, 20 },
+        (Rectangle){ screenWidth / 2 + 470, screenHeight - 80, 50, 20 },
         "Max   ", &settings->frameMaxSelect, 0, settings->frameLimit, settings->frameMaxEdit))
     {
         settings->frameMaxEdit = !settings->frameMaxEdit;
@@ -3457,14 +3655,14 @@ static inline void GuiScrubberSettings(
     }
 
     GuiLabel(
-        (Rectangle){ screenWidth - 110, screenHeight - 80, 100, 20 },
+        (Rectangle){ screenWidth / 2 + 530, screenHeight - 80, 100, 20 },
         TextFormat("of %i", settings->frameLimit));
 
     float frameFloatPrev = settings->frameSnap ? (float)frame : settings->playTime / frameTime;
     float frameFloat = frameFloatPrev;
 
     GuiSliderBar(
-        (Rectangle){ 100, screenHeight - 50, screenWidth - 220, 20 },
+        (Rectangle){ screenWidth / 2 - 540, screenHeight - 50, 1080, 20 },
         TextFormat("%5.2f", settings->playTime),
         TextFormat("%i", frame),
         &frameFloat,
@@ -3488,6 +3686,7 @@ static inline void GuiScrubberSettings(
 // Application
 //----------------------------------------------------------------------------------
 
+// Structure containing all of the application state which we can then pass to the Update function
 typedef struct {
 
     int argc;
@@ -3517,7 +3716,7 @@ typedef struct {
 
 } ApplicationState;
 
-
+// Update function - what is called to "tick" the application.
 static void ApplicationUpdate(void* voidApplicationState)
 {
     ApplicationState* app = voidApplicationState;
@@ -3681,7 +3880,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     PROFILE_END(Update);
 
-    // Render
+    // Rendering
 
     Frustum frustum = FrustumFromCameraMatrices(
         GetCameraProjectionMatrix(&app->camera.cam3d, app->screenHeight / app->screenWidth),
@@ -3695,7 +3894,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     BeginMode3D(app->camera.cam3d);
 
-    // Set Shader Global Uniforms
+    // Set shader uniforms that don't change based on the object being drawn
 
     Vector3 sunColorValue = { app->renderSettings.sunColor.r / 255.0f, app->renderSettings.sunColor.g / 255.0f, app->renderSettings.sunColor.b / 255.0f };
     Vector3 skyColorValue = { app->renderSettings.skyColor.r / 255.0f, app->renderSettings.skyColor.g / 255.0f, app->renderSettings.skyColor.b / 255.0f };
@@ -3736,6 +3935,8 @@ static void ApplicationUpdate(void* voidApplicationState)
         SetShaderValue(app->shader, app->uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
 
+        // Draw ground in a grid of 10x10, 2 meter wide segments.
+        
         for (int i = 0; i < 11; i++)
         {
             for (int j = 0; j < 11; j++)
@@ -3838,7 +4039,7 @@ static void ApplicationUpdate(void* voidApplicationState)
             {
                 continue;
             }
-                        
+            
             PROFILE_BEGIN(RenderingCapsulesCapsule);
             
             // If capsule is semi-transparent disable depth mask
@@ -3881,7 +4082,6 @@ static void ApplicationUpdate(void* voidApplicationState)
             SetShaderValueV(app->shader, app->uniforms.aoCapsuleStarts, app->capsuleData.aoCapsuleStarts, SHADER_UNIFORM_VEC3, aoCapsuleCount);
             SetShaderValueV(app->shader, app->uniforms.aoCapsuleVectors, app->capsuleData.aoCapsuleVectors, SHADER_UNIFORM_VEC3, aoCapsuleCount);
             SetShaderValueV(app->shader, app->uniforms.aoCapsuleRadii, app->capsuleData.aoCapsuleRadii, SHADER_UNIFORM_FLOAT, aoCapsuleCount);
-
 
             // Find all capsules casting shadows on this capsule
 
@@ -4041,11 +4241,12 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     PROFILE_END(Gui);
 
+#if defined(ENABLE_PROFILE) && defined(_WIN32)
+
     // Display Profile Records
 
-    PROFILE_UPDATE();
+    PROFILE_TICKERS_UPDATE();
     
-#if defined(ENABLE_PROFILE)
     for (int i = 0; i < globalProfileRecords.num; i++)
     {
         GuiLabel((Rectangle){ 260, 10 + (float)i * 20, 200, 20 }, globalProfileRecords.records[i]->name);
@@ -4065,7 +4266,8 @@ static void ApplicationUpdate(void* voidApplicationState)
 
 int main(int argc, char** argv)
 {
-    PROFILE_INIT()
+    PROFILE_INIT();
+    PROFILE_TICKERS_INIT();
     
     // Init Application State
     
@@ -4125,7 +4327,7 @@ int main(int argc, char** argv)
     
     app.errMsg[0] = '\0';
 
-    // Load File(s)
+    // Load any files given as command line arguments
 
     for (int i = 1; i < argc; i++)
     {
@@ -4160,7 +4362,7 @@ int main(int argc, char** argv)
     }
 #endif
 
-    // Unload stuff and finish
+    // Unload and finish
 
     CapsuleDataFree(&app.capsuleData);
     CharacterDataFree(&app.characterData);
