@@ -1,11 +1,11 @@
 PLATFORM ?= PLATFORM_DESKTOP
 BUILD_MODE ?= DEBUG
 DEFINES = -D _DEFAULT_SOURCE -D RAYLIB_BUILD_MODE=$(BUILD_MODE) -D $(PLATFORM)
-OS = $(shell uname)
+OS ?= $(shell uname)
 
 ifeq ($(PLATFORM),PLATFORM_DESKTOP)
     
-    CC = gcc
+    CC ?= gcc
     
     ifeq ($(findstring Linux,$(OS)),Linux)
         EXT=
