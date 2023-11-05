@@ -1,13 +1,13 @@
 PLATFORM ?= PLATFORM_DESKTOP
 BUILD_MODE ?= DEBUG
 DEFINES = -D _DEFAULT_SOURCE -D RAYLIB_BUILD_MODE=$(BUILD_MODE) -D $(PLATFORM)
-OS ?= $(shell uname)
+PLATFORM_OS ?= $(shell uname)
 
 ifeq ($(PLATFORM),PLATFORM_DESKTOP)
     
-    CC ?= gcc
+    CC = gcc
     
-    ifeq ($(findstring Linux,$(OS)),Linux)
+    ifeq ($(findstring Linux,$(PLATFORM_OS)),Linux)
         EXT=
         RAYLIB_DIR = ~/raylib
         INCLUDE_DIR = -I ./ -I $(RAYLIB_DIR)/raylib/src -I $(RAYLIB_DIR)/raygui/src
@@ -20,7 +20,7 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         LIBS = -lraylib -lGL -lm
     endif
     
-    ifeq ($(findstring MINGW,$(OS)),MINGW)
+    ifeq ($(findstring MINGW,$(PLATFORM_OS)),MINGW)
         EXT = .exe
         RAYLIB_DIR = C:/raylib
         INCLUDE_DIR = -I ./ -I $(RAYLIB_DIR)/raylib/src -I $(RAYLIB_DIR)/raygui/src
