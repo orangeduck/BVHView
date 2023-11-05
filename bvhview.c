@@ -880,7 +880,7 @@ static bool BVHParseJointName(BVHJointData* jnt, Parser* par)
     char buffer[256];
     int chrnum = 0;
     while (chrnum < 255 && ParserOneOf(par,
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"))
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:-"))
     {
         buffer[chrnum] = ParserPeek(par);
         chrnum++;

@@ -48,15 +48,12 @@ ifeq ($(PLATFORM),PLATFORM_WEB)
     endif
 endif
 
-SOURCE = $(wildcard *.c)
-HEADER = $(wildcard *.h)
-
 .PHONY: all
 
 all: bvhview
 
-bvhview: $(SOURCE) $(HEADER)
-	$(CC) -o $@$(EXT) $(SOURCE) $(CFLAGS) $(LIBS) 
+bvhview: bvhview.c
+	$(CC) -o $@$(EXT) bvhview.c $(CFLAGS) $(LIBS) 
 
 clean:
 	rm bvhview$(EXT)
