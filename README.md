@@ -1,8 +1,12 @@
 # BVHView
 
-BVHView is a simple .bvh animation file format viewer built using [raylib](https://www.raylib.com/).
+BVHView is a simple [.bvh animation file format](https://research.cs.wisc.edu/graphics/Courses/cs-838-1999/Jeff/BVH.html) viewer built using [raylib](https://www.raylib.com/).
 
-<video src="https://theorangeduck.com/media/uploads/BVHView/bvhview.m4v"></video>
+
+
+https://github.com/orangeduck/BVHView/assets/177299/9f976284-02c1-4a14-bca4-b8b3d7c9a774
+
+
 
 * [Download (Windows)](https://theorangeduck.com/media/uploads/BVHView/bvhview.zip)
 * [Project Page](https://theorangeduck.com/page/bvhview)
