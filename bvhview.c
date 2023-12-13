@@ -1152,7 +1152,7 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
 {
     // Read file Contents
 
-    FILE* f = fopen(filename, "r");
+    FILE* f = fopen(filename, "rb");
 
     if (f == NULL)
     {
@@ -3866,7 +3866,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         if (app->scrubberSettings.playTime >= app->scrubberSettings.timeMax)
         {
-            app->scrubberSettings.playTime = app->scrubberSettings.looping ?
+            app->scrubberSettings.playTime = (app->scrubberSettings.looping && app->scrubberSettings.timeMax >= 1e-8f) ?
                 fmod(app->scrubberSettings.playTime, app->scrubberSettings.timeMax) + app->scrubberSettings.timeMin :
                 app->scrubberSettings.timeMax;
         }
