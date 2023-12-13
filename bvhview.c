@@ -1152,7 +1152,7 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
 {
     // Read file Contents
 
-    FILE* f = fopen(filename, "r");
+    FILE* f = fopen(filename, "rb");
 
     if (f == NULL)
     {
