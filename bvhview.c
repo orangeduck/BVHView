@@ -3866,7 +3866,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         if (app->scrubberSettings.playTime >= app->scrubberSettings.timeMax)
         {
-            app->scrubberSettings.playTime = app->scrubberSettings.looping ?
+            app->scrubberSettings.playTime = (app->scrubberSettings.looping && app->scrubberSettings.timeMax >= 1e-8f) ?
                 fmod(app->scrubberSettings.playTime, app->scrubberSettings.timeMax) + app->scrubberSettings.timeMin :
                 app->scrubberSettings.timeMax;
         }
