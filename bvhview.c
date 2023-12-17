@@ -3289,6 +3289,7 @@ typedef struct {
 
     bool playing;
     bool looping;
+    bool inplace;
     float playTime;
     float playSpeed;
     bool frameSnap;
@@ -3311,6 +3312,7 @@ static inline void ScrubberSettingsInit(ScrubberSettings* settings, int argc, ch
 {
     settings->playing = ArgBool(argc, argv, "playing", true);
     settings->looping = ArgBool(argc, argv, "looping", false);
+    settings->inplace = ArgBool(argc, argv, "inplace", false);
     settings->playTime = ArgFloat(argc, argv, "playTime", 0.0f);
     settings->playSpeed = ArgFloat(argc, argv, "playSpeed", 1.0f);
     settings->frameSnap = ArgBool(argc, argv, "frameSnap", true);
@@ -3680,20 +3682,21 @@ static inline void GuiScrubberSettings(
     GuiCheckBox((Rectangle){ screenWidth / 2 - 350, screenHeight - 80, 20, 20 }, "Snap to Frame", &settings->frameSnap);
     GuiComboBox((Rectangle){ screenWidth / 2 - 240, screenHeight - 80, 100, 20 }, "Nearest;Linear;Cubic", &settings->sampleMode);
 
-    GuiToggle((Rectangle){ screenWidth / 2 - 25, screenHeight - 80, 50, 20 }, "Play", &settings->playing);
-    GuiToggle((Rectangle){ screenWidth / 2 - 85, screenHeight - 80, 50, 20 }, "Loop", &settings->looping);
+    GuiToggle((Rectangle){ screenWidth / 2 - 130, screenHeight - 80, 50, 20 }, "Inplace", &settings->inplace);
+    GuiToggle((Rectangle){ screenWidth / 2 - 70, screenHeight - 80, 50, 20 }, "Loop", &settings->looping);
+    GuiToggle((Rectangle){ screenWidth / 2 - 10, screenHeight - 80, 50, 20 }, "Play", &settings->playing);
 
     bool speed01x = settings->playSpeed == 0.1f;
-    GuiToggle((Rectangle){ screenWidth / 2 + 40, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { settings->playSpeed = 0.1f; }
+    GuiToggle((Rectangle){ screenWidth / 2 + 50, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { settings->playSpeed = 0.1f; }
     bool speed05x = settings->playSpeed == 0.5f;
-    GuiToggle((Rectangle){ screenWidth / 2 + 80, screenHeight - 80, 30, 20 }, "0.5x", &speed05x); if (speed05x) { settings->playSpeed = 0.5f; }
+    GuiToggle((Rectangle){ screenWidth / 2 + 90, screenHeight - 80, 30, 20 }, "0.5x", &speed05x); if (speed05x) { settings->playSpeed = 0.5f; }
     bool speed1x = settings->playSpeed == 1.0f;
-    GuiToggle((Rectangle){ screenWidth / 2 + 120, screenHeight - 80, 30, 20 }, "1x", &speed1x); if (speed1x) { settings->playSpeed = 1.0f; }
+    GuiToggle((Rectangle){ screenWidth / 2 + 130, screenHeight - 80, 30, 20 }, "1x", &speed1x); if (speed1x) { settings->playSpeed = 1.0f; }
     bool speed2x = settings->playSpeed == 2.0f;
-    GuiToggle((Rectangle){ screenWidth / 2 + 160, screenHeight - 80, 30, 20 }, "2x", &speed2x); if (speed2x) { settings->playSpeed = 2.0f; }
+    GuiToggle((Rectangle){ screenWidth / 2 + 170, screenHeight - 80, 30, 20 }, "2x", &speed2x); if (speed2x) { settings->playSpeed = 2.0f; }
     bool speed4x = settings->playSpeed == 4.0f;
-    GuiToggle((Rectangle){ screenWidth / 2 + 200, screenHeight - 80, 30, 20 }, "4x", &speed4x); if (speed4x) { settings->playSpeed = 4.0f; }
-    GuiSliderBar((Rectangle){ screenWidth / 2 + 240, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", settings->playSpeed), &settings->playSpeed, 0.0f, 4.0f);
+    GuiToggle((Rectangle){ screenWidth / 2 + 210, screenHeight - 80, 30, 20 }, "4x", &speed4x); if (speed4x) { settings->playSpeed = 4.0f; }
+    GuiSliderBar((Rectangle){ screenWidth / 2 + 250, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", settings->playSpeed), &settings->playSpeed, 0.0f, 4.0f);
 
     int frame = ClampInt((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
 
@@ -3905,6 +3908,30 @@ static void ApplicationUpdate(void* voidApplicationState)
                 &app->characterData.bvhData[i],
                 app->scrubberSettings.playTime,
                 app->characterData.scales[i]);
+        }
+
+        if (app->scrubberSettings.inplace)
+        {
+            // Remove Translation on ground Plane
+          
+            app->characterData.xformData[i].localPositions[0].x = 0.0f;
+            app->characterData.xformData[i].localPositions[0].z = 0.0f;
+            
+            // Attempt to extract rotation around vertical axis (this does not work 
+            // for all animations but is pretty effective for almost all of them)
+            
+            Quaternion verticalRotation = QuaternionInvert(QuaternionNormalize((Quaternion){
+                0.0f,
+                app->characterData.xformData[i].localRotations[0].y,
+                0.0f,
+                app->characterData.xformData[i].localRotations[0].w,
+            }));
+            
+            // Remove rotation around vertical axis
+            
+            app->characterData.xformData[i].localRotations[0] = QuaternionMultiply(
+                verticalRotation, 
+                app->characterData.xformData[i].localRotations[0]);
         }
 
         TransformDataForwardKinematics(&app->characterData.xformData[i]);
