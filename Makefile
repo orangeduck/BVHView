@@ -7,6 +7,19 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
     
     CC = gcc
     
+	ifeq ($(PLATFORM_OS),Darwin) # macOS settings
+		EXT=
+        RAYLIB_DIR = ~/raylib
+        INCLUDE_DIR = -I ./ -I $(RAYLIB_DIR)/raylib/src -I $(RAYLIB_DIR)/raygui/src
+        LIBRARY_DIR = -L $(RAYLIB_DIR)/raylib/src
+		ifeq ($(BUILD_MODE),RELEASE)
+			CFLAGS = -D_DEFAULT_SOURCE -DPLATFORM_DESKTOP -Wall -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR)
+		else
+			CFLAGS = -D_DEFAULT_SOURCE -DPLATFORM_DESKTOP -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR)
+		endif
+		LIBS = -lraylib -framework OpenGL -framework Cocoa  -framework IOKit -framework CoreVideo
+	endif
+
     ifeq ($(findstring Linux,$(PLATFORM_OS)),Linux)
         EXT=
         RAYLIB_DIR = ~/raylib
