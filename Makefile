@@ -52,8 +52,8 @@ endif
 
 all: bvhview
 
-bvhview: bvhview.c
-	$(CC) -o $@$(EXT) bvhview.c $(CFLAGS) $(LIBS) 
+bvhview: bvhview.c additions.c
+	$(CC) -o $@$(EXT) bvhview.c additions.c $(CFLAGS) $(LIBS) 
 
 clean:
 	rm bvhview$(EXT)

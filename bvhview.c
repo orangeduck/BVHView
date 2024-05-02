@@ -39,6 +39,9 @@
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 
+#include "additions.h"
+#include "rmodels.c"
+
 #if defined(PLATFORM_WEB)
 #include <emscripten/emscripten.h>
 #endif
@@ -579,7 +582,7 @@ static inline void OrbitCameraInit(OrbitCamera* camera, int argc, char** argv)
     camera->altitude = ArgFloat(argc, argv, "cameraAltitude", 0.4f);
     camera->distance = ArgFloat(argc, argv, "cameraDistance", 4.0f);
     camera->offset = ArgVector3(argc, argv, "cameraOffset", Vector3Zero());
-    camera->track = ArgBool(argc, argv, "cameraTrack", true);
+    camera->track = ArgBool(argc, argv, "cameraTrack", false);
     camera->trackBone = ArgInt(argc, argv, "cameraTrackBone", 0);
 }
 
@@ -825,6 +828,117 @@ static inline int BVHDataAddJoint(BVHData* bvh)
     bvh->jointCount++;
     BVHJointDataInit(&bvh->joints[bvh->jointCount - 1]);
     return bvh->jointCount - 1;
+}
+
+//----------------------------------------------------------------------------------
+// BVHViewer Additions by Teodor Nikolov
+//----------------------------------------------------------------------------------
+static inline void CharacterModelInit(CharacterModel* model)
+{
+    const char* modelPath = "./assets/GENEA_Model.gltf";
+    BVHALoadCharacterModelFromFile(model, modelPath);
+}
+
+static inline void CharacterModelFree(CharacterModel* model)
+{
+    BVHAUnloadCharacterModel(model);
+}
+
+static BoneInfo convertBVHJointToBoneInfo(BVHJointData* joint)
+{
+    BoneInfo bone;
+    strncpy(bone.name, joint->name, sizeof(bone.name));
+    bone.parent = joint->parent;
+    return bone;
+}
+
+static char** getCommonBoneNames(const BVHData* bvhData, const Model* model, int* commonBoneCount)
+{
+    char** commonBoneNames = malloc(sizeof(char*) * bvhData->jointCount);
+    *commonBoneCount = 0;
+
+    for (int i = 0; i < bvhData->jointCount; ++i) {
+        if (boneExistsInModel(bvhData->joints[i].name, model)) {
+            commonBoneNames[*commonBoneCount] = malloc(sizeof(char) * (strlen(bvhData->joints[i].name) + 1));
+            strcpy(commonBoneNames[*commonBoneCount], bvhData->joints[i].name);
+            (*commonBoneCount)++;
+        }
+    }
+
+    return commonBoneNames;
+}
+
+static ModelAnimation BVHToModelAnimation(const BVHData* bvhData, const Model* model)
+{
+    // int commonBoneCount = 0;
+    // char** commonBoneNames = getCommonBoneNames(bvhData, model, &commonBoneCount);
+
+    ModelAnimation animation;
+    animation.boneCount = model->boneCount;
+    animation.frameCount = bvhData->frameCount;
+    animation.bones = model->bones;
+
+    // Convert BVHData animation frames to ModelAnimation animation frames
+    animation.framePoses = malloc(sizeof(Transform*) * animation.frameCount);
+    for (int i = 0; i < animation.frameCount; ++i)
+    {
+        int boneCount = animation.boneCount;
+        Matrix* boneTransformMats = malloc(sizeof(Matrix) * boneCount);
+        animation.framePoses[i] = malloc(sizeof(Transform) * boneCount);
+
+        int channelOffset = 0;
+        for (int j = 0; j < boneCount; ++j)
+        {
+            int dataIndex = i * bvhData->channelCount + channelOffset;
+            int boneId = j;
+            int boneIdParent = animation.bones[j].parent;
+            assert(boneIdParent < boneId);
+
+            Vector3 boneOffset;
+            boneOffset.x = bvhData->motionData[dataIndex+0] / 100.0f;
+            boneOffset.y = bvhData->motionData[dataIndex+1] / 100.0f;
+            boneOffset.z = bvhData->motionData[dataIndex+2] / 100.0f;
+
+            Vector3 rotation; // Euler angles
+            rotation.x = bvhData->motionData[dataIndex+4] * DEG2RAD;
+            rotation.y = bvhData->motionData[dataIndex+5] * DEG2RAD;
+            rotation.z = bvhData->motionData[dataIndex+3] * DEG2RAD;
+            channelOffset += bvhData->joints[j].channelCount;
+
+            // Calculate local transform matrix
+            Matrix matTranslation = MatrixTranslate(boneOffset.x, boneOffset.y, boneOffset.z); // Bones do not slide
+            Matrix matRotationX = MatrixRotateX(rotation.x);
+            Matrix matRotationY = MatrixRotateY(rotation.y);
+            Matrix matRotationZ = MatrixRotateZ(rotation.z);
+            Matrix matRotation = MatrixMultiply(MatrixMultiply(matRotationY, matRotationX), matRotationZ);
+            Matrix matScale = MatrixScale(1.0f, 1.0f, 1.0f); // Bones do not stretch
+            Matrix matTransform = MatrixMultiply(MatrixMultiply(matScale, matRotation), matTranslation);
+
+            // Compute model-level bone transform matrix from parent bone
+            Matrix matTransformParent;
+            if (j == 0) {
+                matTransformParent = MatrixIdentity();
+            }
+            else {
+                matTransformParent = boneTransformMats[boneIdParent];
+            }
+            Matrix matTransformBone = MatrixMultiply(matTransform, matTransformParent);
+            boneTransformMats[j] = matTransformBone;
+
+            // Set the final transformation for this bone in this frame
+            Transform transform;
+            transform.translation = Vector3Transform((Vector3){0.0f, 0.0f, 0.0f}, matTransformBone);
+            transform.rotation = QuaternionFromMatrix(matTransformBone);
+            transform.scale = (Vector3){1.0f, 1.0f, 1.0f};
+            animation.framePoses[i][j] = transform;
+        }
+
+        free(boneTransformMats);
+    }
+
+    strcpy(animation.name, "placeholder_text");
+
+    return animation;
 }
 
 //----------------------------------------------------------------------------------
@@ -1414,6 +1528,7 @@ typedef struct {
 
     // Character BVH Data
     BVHData bvhData[CHARACTERS_MAX];
+    ModelAnimation animData[CHARACTERS_MAX];
     
     // Scales of each character
     float scales[CHARACTERS_MAX];
@@ -2617,6 +2732,8 @@ uniform mat4 matNormal;
 uniform mat4 matView;
 uniform mat4 matProjection;
 
+uniform int isCharacter;
+
 out vec3 fragPosition;
 out vec2 fragTexCoord;
 out vec3 fragNormal;
@@ -2646,6 +2763,11 @@ void main()
             capsuleHalfLength, capsuleRadius)) + capsulePosition;
 
         fragNormal = Rotate(capsuleRotation, vertexNormal);
+    }
+    else if (isCharacter == 1)
+    {
+        fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
+        fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 1.0)));
     }
     else
     {
@@ -2705,6 +2827,9 @@ uniform vec3 skyColor;
 uniform float ambientStrength;
 uniform float groundStrength;
 uniform float exposure;
+
+uniform int isCharacter;
+uniform sampler2D characterTexture;
 
 out vec4 finalColor;
 
@@ -2907,14 +3032,23 @@ void main()
     }
 
     // Compute albedo from grid and checker
-
-    float gridFine = Grid(20.0 * uvs, 0.025);
-    float gridCoarse = Grid(2.0 * uvs, 0.02);
-    float check = Checker(2.0 * uvs);
-
-    vec3 albedo = FromGamma(objectColor) * mix(mix(mix(0.9, 0.95, check), 0.85, gridFine), 1.0, gridCoarse);
-    float specularity = objectSpecularity * mix(mix(0.0, 0.75, check), 1.0, gridCoarse);
     
+    vec3 albedo;
+    float specularity;
+    if (isCharacter == 1)
+    {
+        albedo = FromGamma(vec3(texture(characterTexture, uvs)));
+        specularity = 0.0;
+    }
+    else
+    {
+        float gridFine = Grid(20.0 * uvs, 0.025);
+        float gridCoarse = Grid(2.0 * uvs, 0.02);
+        float check = Checker(2.0 * uvs);
+        albedo = FromGamma(objectColor) * mix(mix(mix(0.9, 0.95, check), 0.85, gridFine), 1.0, gridCoarse);
+        specularity = objectSpecularity * mix(mix(0.0, 0.75, check), 1.0, gridCoarse);
+    }
+
     // Compute lighting
     
     vec3 eyeDir = normalize(pos - cameraPosition);
@@ -2950,7 +3084,9 @@ void main()
 
     vec3 final = diffuse + ambient + specular;
 
-    finalColor = vec4(ToGamma(exposure * final), objectOpacity);
+    finalColor = vec4(ToGamma(exposure * final), objectOpacity); // Original
+    // finalColor = vec4(nor[0], nor[1], nor[2], 1.0); // DEBUG Normals
+    // finalColor = vec4(uvs[0], uvs[1], 0.0, 1.0); // DEBUG UV coords
 }
 
 );
@@ -2995,6 +3131,9 @@ typedef struct
     int ambientStrength;
     int groundStrength;
 
+    int isCharacter;
+    int characterTexture;
+
     int exposure;
 
 } ShaderUniforms;
@@ -3038,6 +3177,9 @@ static void ShaderUniformsInit(ShaderUniforms* uniforms, Shader shader)
     uniforms->skyColor = GetShaderLocation(shader, "skyColor");
     uniforms->ambientStrength = GetShaderLocation(shader, "ambientStrength");
     uniforms->groundStrength = GetShaderLocation(shader, "groundStrength");
+
+    uniforms->isCharacter = GetShaderLocation(shader, "isCharacter");
+    uniforms->characterTexture =  GetShaderLocation(shader, "characterTexture");
 
     uniforms->exposure = GetShaderLocation(shader, "exposure");
 }
@@ -3774,6 +3916,7 @@ typedef struct {
     Mesh groundPlaneMesh;
     Model groundPlaneModel;
     Model capsuleModel;
+    CharacterModel characterModel;
 
     CharacterData characterData;
     CapsuleData capsuleData;
@@ -3835,6 +3978,9 @@ static void ApplicationUpdate(void* voidApplicationState)
             if (CharacterDataLoadFromFile(&app->characterData, droppedFiles.paths[i], app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
+
+                // convert from BVH to RayLib anim data
+                app->characterData.animData[app->characterData.active] = BVHToModelAnimation(&app->characterData.bvhData[app->characterData.active], &app->characterModel.model);
             }
         }
 
@@ -4027,10 +4173,12 @@ static void ApplicationUpdate(void* voidApplicationState)
     if (app->renderSettings.drawChecker)
     {
         int groundIsCapsule = 0;
+        int groundIsCharacter = 0;
         Vector3 groundColor = { 1.0f, 1.0f, 1.0f };
 
         SetShaderValue(app->shader, app->uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
+        SetShaderValue(app->shader, app->uniforms.isCharacter, &groundIsCharacter, SHADER_UNIFORM_INT);
 
         // Draw ground in a grid of 10x10, 2 meter wide segments.
         
@@ -4120,7 +4268,9 @@ static void ApplicationUpdate(void* voidApplicationState)
         // Render
 
         int capsuleIsCapsule = 1;
+        int capsuleIsCharacter = 0;
         SetShaderValue(app->shader, app->uniforms.isCapsule, &capsuleIsCapsule, SHADER_UNIFORM_INT);
+        SetShaderValue(app->shader, app->uniforms.isCharacter, &capsuleIsCharacter, SHADER_UNIFORM_INT);
 
         for (int i = 0; i < app->capsuleData.capsuleCount; i++)
         {
@@ -4211,6 +4361,27 @@ static void ApplicationUpdate(void* voidApplicationState)
             }
 
             PROFILE_END(RenderingCapsulesCapsule);
+        }
+    }
+
+    // Draw character mesh
+    if (app->characterModel.isLoaded)
+    {
+        int characterIsCapsule = 0;
+        int characterIsCharacter = 1;
+        SetShaderValue(app->shader, app->uniforms.isCapsule, &characterIsCapsule, SHADER_UNIFORM_INT);
+        SetShaderValue(app->shader, app->uniforms.isCharacter, &characterIsCharacter, SHADER_UNIFORM_INT);
+
+        Model* currModel = &app->characterModel;
+
+        // Draw one model instance for each animation
+        for (int i = 0; i < app->characterData.count; i++)
+        {
+            Vector3 position = {1.0f * i, 0.0f, 0.0f};
+            int frame = app->scrubberSettings.playTime / app->characterData.bvhData[i].frameTime;
+            UpdateModelAnimation(app->characterModel.model, app->characterData.animData[i], frame);
+            DrawModel(app->characterModel.model, position, 1.0f, WHITE);
+            break;
         }
     }
 
@@ -4399,9 +4570,10 @@ int main(int argc, char** argv)
     app.capsuleModel = LoadOBJFromMemory(capsuleOBJ);
     app.capsuleModel.materials[0].shader = app.shader;
 
-    // Character Data
-
     CharacterDataInit(&app.characterData, argc, argv);
+    CharacterModelInit(&app.characterModel);
+    app.characterModel.model.materials[0].shader = app.shader;
+    app.characterModel.model.materials[1].shader = app.shader;
 
     // Capsule Data
 
@@ -4463,6 +4635,7 @@ int main(int argc, char** argv)
 
     CapsuleDataFree(&app.capsuleData);
     CharacterDataFree(&app.characterData);
+    CharacterModelFree(&app.characterModel);
 
     UnloadModel(app.capsuleModel);
     UnloadModel(app.groundPlaneModel);

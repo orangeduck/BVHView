@@ -1,0 +1,10 @@
+{
+    "configurations": [
+      {
+        "name": "Win32",
+        "includePath": ["${workspaceFolder}/**", "C:/raylib/raylib/src", "C:/raylib/raygui/src"],
+        "intelliSenseMode": "msvc-x64"
+      }
+    ],
+    "version": 4
+  }

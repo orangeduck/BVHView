@@ -1,0 +1,12 @@
+{
+    "C_Cpp.intelliSenseEngineFallback": "disabled",
+    "files.associations": {
+        "additions.h": "c",
+        "*.m": "c",
+        "xutility": "c",
+        "xmemory": "c",
+        "raylib.h": "c",
+        "raygui.h": "c",
+        "optional": "c"
+    }
+}
