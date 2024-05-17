@@ -28,6 +28,7 @@
 #include <ctype.h>
 #include <float.h>
 #include <errno.h>
+#include <limits.h>
 
 #include "raylib.h"
 #include "rcamera.h"
@@ -1623,6 +1624,7 @@ static inline void CharacterDataFree(CharacterData* data)
 // Attempt to load a new character from the given file path
 static bool CharacterDataLoadFromFile(
     CharacterData* data,
+    Model* model,
     const char* path,
     char* errMsg,
     int errMsgSize)
@@ -1692,6 +1694,10 @@ static bool CharacterDataLoadFromFile(
             }
             strcat(data->jointNamesCombo[data->count], data->bvhData[data->count].joints[i].name);
         }
+
+        // Convert to raylib-compatible animation
+
+        data->animData[data->count] = BVHToModelAnimation(&data->bvhData[data->count], model);
 
         // Done
 
@@ -3945,7 +3951,7 @@ static void ApplicationUpdate(void* voidApplicationState)
             char fileNameToLoad[512];
             snprintf(fileNameToLoad, 512, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
 
-            if (CharacterDataLoadFromFile(&app->characterData, fileNameToLoad, app->errMsg, 512))
+            if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, fileNameToLoad, app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
 
@@ -3976,12 +3982,9 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         for (int i = 0; i < droppedFiles.count; i++)
         {
-            if (CharacterDataLoadFromFile(&app->characterData, droppedFiles.paths[i], app->errMsg, 512))
+            if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, droppedFiles.paths[i], app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
-
-                // convert from BVH to RayLib anim data
-                app->characterData.animData[app->characterData.active] = BVHToModelAnimation(&app->characterData.bvhData[app->characterData.active], &app->characterModel.model);
             }
         }
 
@@ -4572,7 +4575,7 @@ int main(int argc, char** argv)
     app.capsuleModel.materials[0].shader = app.shader;
 
     CharacterDataInit(&app.characterData, argc, argv);
-    CharacterModelInit(&app.characterModel);
+    CharacterModelInit(&app.characterModel); // Load GENEA model
     app.characterModel.model.materials[0].shader = app.shader;
     app.characterModel.model.materials[1].shader = app.shader;
 
@@ -4597,13 +4600,16 @@ int main(int argc, char** argv)
     
     app.errMsg[0] = '\0';
 
-    // Load any files given as command line arguments
+    // Load files from arguments
 
-    for (int i = 1; i < argc; i++)
+    char* value = ArgFind(argc, argv, "bvh");
+    if (value)
     {
-        if (argv[i][0] == '-') { continue; }
-
-        CharacterDataLoadFromFile(&app.characterData, argv[i], app.errMsg, 512);
+        char absolute_path[_MAX_PATH];
+        if (_fullpath(absolute_path, value, _MAX_PATH) != NULL)
+        {
+            CharacterDataLoadFromFile(&app.characterData, &app.characterModel.model, absolute_path, app.errMsg, 512);
+        }
     }
 
     // If any characters loaded, update capsules and scrubber
