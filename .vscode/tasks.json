@@ -3,7 +3,7 @@
         {
             "type": "cppbuild",
             "label": "Build BVHView",
-            "command": "C:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\bin\\bash.exe",
+            "command": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\bin\\bash.exe",
             "args": ["-c", "make"],
             "options": {
                 "cwd": "${workspaceFolder}"

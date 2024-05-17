@@ -16,6 +16,20 @@
                 "traceResponse": true,
                 "engineLogging": true
             }
+        },
+        {
+            "name": "BVHView w/Args",
+            "type": "cppdbg",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "program": "${workspaceFolder}\\BVHView.exe",
+            "args": ["--bvh=\"./assets/samples/trn_2023_v0_057_main-agent.bvh\"", "--wav=\"./assets/samples/trn_2023_v0_057_main-agent.wav\""],
+            "preLaunchTask": "Build BVHView",
+            "logging": {
+                "trace": true,
+                "traceResponse": true,
+                "engineLogging": true
+            }
         }
     ]
 }
