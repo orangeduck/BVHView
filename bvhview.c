@@ -1277,9 +1277,10 @@ static bool BVHDataLoad(BVHData* bvh, const char* filename, char* errMsg, int er
     fseek(f, 0, SEEK_END);
     long int length = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char* buffer = malloc(length + 1);
+    char* buffer = malloc(length + 2);
     fread(buffer, 1, length, f);
     buffer[length] = '\n';
+    buffer[length+1] = '\n'; // Prevents segmentation fault during parsing of .bvh file that does not end with an empty line
     fclose(f);
     
     // Free and re-init in case we are re-using an old buffer 
