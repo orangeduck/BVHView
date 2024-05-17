@@ -12,7 +12,11 @@
 			"xmemory": "c",
 			"raylib.h": "c",
 			"raygui.h": "c",
-			"optional": "c"
+			"optional": "c",
+			"algorithm": "c",
+			"type_traits": "c",
+			"xtr1common": "c",
+			"gui_window_file_dialog.h": "c"
 		}
 	}
 }

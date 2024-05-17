@@ -1,5 +1,6 @@
 #include "additions.h"
 #include "raylib.h"
+#include "raudio.c"
 
 bool BVHALoadCharacterModelFromFile(CharacterModel* characterModel, const char *fileName)
 {
@@ -22,4 +23,9 @@ bool boneExistsInModel(const char* boneName, const Model* model) {
         }
     }
     return false;
+}
+
+void SetAudioTimeInSeconds(Sound* audio, float seconds)
+{
+    audio->stream.buffer->frameCursorPos = audio->stream.sampleRate * seconds;
 }

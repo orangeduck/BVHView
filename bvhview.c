@@ -1528,9 +1528,10 @@ typedef struct {
     // Character which is "active" or selected
     int active;
 
-    // Character BVH Data
+    // Character Data
     BVHData bvhData[CHARACTERS_MAX];
     ModelAnimation animData[CHARACTERS_MAX];
+    Sound* audioData[CHARACTERS_MAX];
     
     // Scales of each character
     float scales[CHARACTERS_MAX];
@@ -1617,6 +1618,12 @@ static inline void CharacterDataFree(CharacterData* data)
         TransformDataFree(&data->xformTmp2[i]);
         TransformDataFree(&data->xformTmp3[i]);
         BVHDataFree(&data->bvhData[i]);
+        if (data->audioData[i] != NULL)
+        {
+            Sound* audio = data->audioData[i];
+            StopSound(*audio);
+            UnloadSound(*audio);
+        }
         free(data->jointNamesCombo[i]);
     }
 }
@@ -1625,6 +1632,7 @@ static inline void CharacterDataFree(CharacterData* data)
 static bool CharacterDataLoadFromFile(
     CharacterData* data,
     Model* model,
+    Sound* audio,
     const char* path,
     char* errMsg,
     int errMsgSize)
@@ -1698,6 +1706,16 @@ static bool CharacterDataLoadFromFile(
         // Convert to raylib-compatible animation
 
         data->animData[data->count] = BVHToModelAnimation(&data->bvhData[data->count], model);
+
+        // Optionally associate an audio with this animation
+        if (audio != NULL)
+        {
+            data->audioData[data->count] = audio;
+        }
+        else
+        {
+            data->audioData[data->count] = NULL;
+        }
 
         // Done
 
@@ -3436,6 +3454,16 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
 
 typedef struct {
 
+    bool playbackStopped;
+    bool playbackStarted;
+    bool playbackJumped;
+    bool playbackAtEnd;
+    bool scrubberBeingDragged;
+
+} ScrubberEvents;
+
+typedef struct {
+
     bool playing;
     bool looping;
     bool inplace;
@@ -3455,7 +3483,18 @@ typedef struct {
     float timeMin;
     float timeMax;
 
+    ScrubberEvents events; // Events that occurred during the last application update
+
 } ScrubberSettings;
+
+static inline void ResetScrubberEvents(ScrubberSettings* settings)
+{
+    settings->events.playbackStarted = false;
+    settings->events.playbackStopped = false;
+    settings->events.playbackAtEnd = false;
+    settings->events.playbackJumped = false;
+    settings->events.scrubberBeingDragged = false;
+}
 
 static inline void ScrubberSettingsInit(ScrubberSettings* settings, int argc, char** argv)
 {
@@ -3477,6 +3516,8 @@ static inline void ScrubberSettingsInit(ScrubberSettings* settings, int argc, ch
     settings->frameMaxEdit = false;
     settings->timeMin = 0.0f;
     settings->timeMax = 0.0f;
+
+    ResetScrubberEvents(settings);
 }
 
 static inline void ScrubberSettingsRecomputeLimits(ScrubberSettings* settings, CharacterData* characterData)
@@ -3823,6 +3864,8 @@ static inline void GuiScrubberSettings(
 {
     if (characterData->count == 0) { return; }
 
+    ResetScrubberEvents(settings);
+
     float frameTime = characterData->bvhData[characterData->active].frameTime;
 
     GuiGroupBox((Rectangle){ screenWidth / 2 - 600, screenHeight - 100, 1200, 90 }, "Scrubber");
@@ -3833,7 +3876,21 @@ static inline void GuiScrubberSettings(
 
     GuiToggle((Rectangle){ screenWidth / 2 - 130, screenHeight - 80, 50, 20 }, "Inplace", &settings->inplace);
     GuiToggle((Rectangle){ screenWidth / 2 - 70, screenHeight - 80, 50, 20 }, "Loop", &settings->looping);
+
+    bool prevPlaying = settings->playing;
     GuiToggle((Rectangle){ screenWidth / 2 - 10, screenHeight - 80, 50, 20 }, "Play", &settings->playing);
+
+    // Playback start event
+    if (prevPlaying == false && settings->playing == true)
+    {
+        settings->events.playbackStarted = true;
+    }
+
+    // Playback stop event
+    if (prevPlaying == true && settings->playing == false)
+    {
+        settings->events.playbackStopped = true;
+    }
 
     bool speed01x = settings->playSpeed == 0.1f;
     GuiToggle((Rectangle){ screenWidth / 2 + 50, screenHeight - 80, 30, 20 }, "0.1x", &speed01x); if (speed01x) { settings->playSpeed = 0.1f; }
@@ -3848,6 +3905,7 @@ static inline void GuiScrubberSettings(
     GuiSliderBar((Rectangle){ screenWidth / 2 + 250, screenHeight - 80, 70, 20 }, "", TextFormat("%5.2fx", settings->playSpeed), &settings->playSpeed, 0.0f, 4.0f);
 
     int frame = ClampInt((int)(settings->playTime / frameTime + 0.5f), settings->frameMin, settings->frameMax);
+    int prevFrame = frame;
 
     if (GuiValueBox(
         (Rectangle){ screenWidth / 2 - 540, screenHeight - 80, 50, 20 },
@@ -3900,6 +3958,14 @@ static inline void GuiScrubberSettings(
             settings->playTime = Clamp(frameFloat * frameTime, settings->timeMin, settings->timeMax);
         }
     }
+
+    if ((frame - prevFrame) > 1 || (frame - prevFrame) < -1)
+    {
+        settings->events.playbackJumped = true;
+    }
+
+    settings->events.scrubberBeingDragged = (frame != prevFrame); // Couldn't find a more robust way; this will trigger even if changes are not made via the GUI
+    settings->events.playbackAtEnd = (frame == settings->frameMax);
 }
 
 //----------------------------------------------------------------------------------
@@ -3951,7 +4017,8 @@ static void ApplicationUpdate(void* voidApplicationState)
             char fileNameToLoad[512];
             snprintf(fileNameToLoad, 512, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
 
-            if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, fileNameToLoad, app->errMsg, 512))
+            Sound* audio = NULL;
+            if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, audio, fileNameToLoad, app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
 
@@ -3982,7 +4049,8 @@ static void ApplicationUpdate(void* voidApplicationState)
 
         for (int i = 0; i < droppedFiles.count; i++)
         {
-            if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, droppedFiles.paths[i], app->errMsg, 512))
+            Sound* audio = NULL;
+            if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, audio, droppedFiles.paths[i], app->errMsg, 512))
             {
                 app->characterData.active = app->characterData.count - 1;
             }
@@ -4368,6 +4436,8 @@ static void ApplicationUpdate(void* voidApplicationState)
         }
     }
 
+    PROFILE_END(RenderingCapsules);
+
     // Draw character mesh
     if (app->characterModel.isLoaded)
     {
@@ -4388,8 +4458,6 @@ static void ApplicationUpdate(void* voidApplicationState)
             break;
         }
     }
-
-    PROFILE_END(RenderingCapsules);
 
     // Grid
 
@@ -4527,6 +4595,45 @@ static void ApplicationUpdate(void* voidApplicationState)
     }
 #endif
 
+    // Update audio playback
+    for (int i = 0; i < app->characterData.count; i++)
+    {
+        Sound* audio = app->characterData.audioData[i];
+        if (audio != NULL)
+        {
+            if (app->scrubberSettings.events.scrubberBeingDragged)
+            {
+                if (app->scrubberSettings.events.playbackJumped)
+                {
+                    PlaySound(*audio);
+                    SetAudioTimeInSeconds(audio, app->scrubberSettings.playTime);
+                }
+                else
+                {
+                    StopSound(*audio);
+                }
+            }
+            else
+            {
+                if(!IsSoundPlaying(*audio) && app->scrubberSettings.playing)
+                {
+                    PlaySound(*audio);
+                    SetAudioTimeInSeconds(audio, app->scrubberSettings.playTime);
+                }
+
+                if (IsSoundPlaying(*audio) && !app->scrubberSettings.playing)
+                {
+                    StopSound(*audio);
+                }
+            }
+
+            if (app->scrubberSettings.events.playbackAtEnd)
+            {
+                StopSound(*audio);
+            }
+        }
+    }
+
     // Done
 
     EndDrawing();
@@ -4554,6 +4661,7 @@ int main(int argc, char** argv)
     SetConfigFlags(FLAG_VSYNC_HINT);
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(app.screenWidth, app.screenHeight, "BVHView");
+    InitAudioDevice();
     SetTargetFPS(60);
 
     // Camera
@@ -4602,13 +4710,27 @@ int main(int argc, char** argv)
 
     // Load files from arguments
 
-    char* value = ArgFind(argc, argv, "bvh");
-    if (value)
+    char* argvBvhPath = ArgFind(argc, argv, "bvh");
+    char* argvWavPath = ArgFind(argc, argv, "wav");
+    char bvhPathAbsolute[_MAX_PATH];
+    char wavPathAbsolute[_MAX_PATH];
+    if (argvBvhPath)
     {
-        char absolute_path[_MAX_PATH];
-        if (_fullpath(absolute_path, value, _MAX_PATH) != NULL)
+        if (_fullpath(bvhPathAbsolute, argvBvhPath, _MAX_PATH) != NULL)
         {
-            CharacterDataLoadFromFile(&app.characterData, &app.characterModel.model, absolute_path, app.errMsg, 512);
+            // Try loading audio for animation
+
+            Sound* audio = NULL;
+            if (argvWavPath)
+            {
+                if (_fullpath(wavPathAbsolute, argvWavPath, _MAX_PATH) != NULL)
+                {
+                    audio = malloc(sizeof(Sound));
+                    *audio = LoadSound(wavPathAbsolute);
+                }
+            }
+
+            CharacterDataLoadFromFile(&app.characterData, &app.characterModel.model, audio, bvhPathAbsolute, app.errMsg, 512);
         }
     }
 

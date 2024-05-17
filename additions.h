@@ -25,3 +25,4 @@ typedef struct {
 BVHA bool BVHALoadCharacterModelFromFile(CharacterModel* characterModel, const char *fileName);
 BVHA void BVHAUnloadCharacterModel(CharacterModel* characterModel);
 BVHA bool boneExistsInModel(const char* boneName, const Model* model);
+BVHA void SetAudioTimeInSeconds(Sound* audio, float seconds);
