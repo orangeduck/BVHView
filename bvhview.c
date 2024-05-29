@@ -908,7 +908,7 @@ static bool BVHParseFloat(float* out, Parser* par)
 
     char* end;
     errno = 0;
-    (*out) = strtof(par->data + par->offset, &end);
+    (*out) = strtod(par->data + par->offset, &end);
 
     if (errno == 0)
     {
