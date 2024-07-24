@@ -53,7 +53,9 @@ endif
 all: bvhview
 
 bvhview: bvhview.c additions.c
-	$(CC) -o $@$(EXT) bvhview.c additions.c $(CFLAGS) $(LIBS) 
+	mkdir -p build
+	cp -r assets build/
+	$(CC) -o build/$@$(EXT) bvhview.c additions.c $(CFLAGS) $(LIBS)
 
 clean:
 	rm bvhview$(EXT)

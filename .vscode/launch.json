@@ -9,8 +9,9 @@
             "type": "cppdbg",
             "request": "launch",
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}\\BVHView.exe",
+            "program": "${workspaceFolder}\\build\\BVHView.exe",
             "preLaunchTask": "Build BVHView",
+            "miDebuggerPath": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\mingw64\\bin\\gdb.exe",
             "logging": {
                 "trace": true,
                 "traceResponse": true,
@@ -22,9 +23,10 @@
             "type": "cppdbg",
             "request": "launch",
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}\\BVHView.exe",
+            "program": "${workspaceFolder}\\build\\BVHView.exe",
             "args": ["--bvh=\"./assets/samples/trn_2023_v0_057_main-agent.bvh\"", "--wav=\"./assets/samples/trn_2023_v0_057_main-agent.wav\""],
             "preLaunchTask": "Build BVHView",
+            "miDebuggerPath": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\mingw64\\bin\\gdb.exe",
             "logging": {
                 "trace": true,
                 "traceResponse": true,

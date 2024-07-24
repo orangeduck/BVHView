@@ -1,9 +1,9 @@
 {
     "tasks": [
         {
-            "type": "cppbuild",
             "label": "Build BVHView",
             "command": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\bin\\bash.exe",
+            "type": "cppbuild",
             "args": ["-c", "make"],
             "options": {
                 "cwd": "${workspaceFolder}"
