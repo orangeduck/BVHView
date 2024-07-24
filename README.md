@@ -1,6 +1,6 @@
 # BVHView (fork)
 
-This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) developed by [Daniel Holden](https://theorangeduck.com/). This BVHView version has been developed for the [Genea Leaderboard](https://genea-workshop.github.io/leaderboard/) research project.
+This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) developed by [Daniel Holden](https://theorangeduck.com/). This BVHView version has been developed for the [GENEA Leaderboard](https://genea-workshop.github.io/leaderboard/) research project.
 
 ## Roadmap
 
