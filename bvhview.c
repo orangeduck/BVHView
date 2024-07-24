@@ -3437,9 +3437,9 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
     settings->drawOrigin = ArgBool(argc, argv, "drawOrigin", true);
     settings->drawGrid = ArgBool(argc, argv, "drawGrid", false);
     settings->drawChecker = ArgBool(argc, argv, "drawChecker", true);
-    settings->drawCapsules = ArgBool(argc, argv, "drawCapsules", true);
+    settings->drawCapsules = ArgBool(argc, argv, "drawCapsules", false);
     settings->drawWireframes = ArgBool(argc, argv, "drawWireframes", false);
-    settings->drawSkeleton = ArgBool(argc, argv, "drawSkeleton", true);
+    settings->drawSkeleton = ArgBool(argc, argv, "drawSkeleton", false);
     settings->drawTransforms = ArgBool(argc, argv, "drawTransforms", false);
     settings->drawAO = ArgBool(argc, argv, "drawAO", true);
     settings->drawShadows = ArgBool(argc, argv, "drawShadows", true);
