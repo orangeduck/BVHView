@@ -1,4 +1,43 @@
-# BVHView
+# BVHView (fork)
+
+This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) developed by [Daniel Holden](https://theorangeduck.com/). This BVHView version has been developed for the [Genea Leaderboard](https://genea-workshop.github.io/leaderboard/) research project.
+
+## Roadmap
+
+- [x] Add textured mesh for GENEA avatar
+- [X] Playback BVH animation onto GENEA avatar
+- [X] Add scrubber-synchronized WAV audio
+- [X] Load BVH and WAV via command line args
+- [ ] Add .mp4 recordings using FFMPEG (for automated pipelines)
+- [ ] Add SMPL-X meshes for the BEAT dataset
+
+(The list could change with time.)
+
+## Building
+
+Please follow the original BVHView build instructions. I work on Windows so Linux has not been tested. If there are build issues, or you have recommendations, please make a GitHub issue or contact me by email: tnikolov@hotmail.com.
+
+## Using
+
+### Windows
+
+Locate the executable in `BVHView/bvhview.exe` for Releases, and `build/BVHView/bvhview.exe` when building yourself. It is recommended that you run the software via a **command line interface**, as some features (such as `.wav` loading) are only supported via command line arguments.
+
+You can find example files in `BVHView/samples/genea/`.
+
+Args:
+- `--bvh` : Path to GENEA-compatible `.bvh` file
+- `--wav` : Path to `.wav` file
+
+CLI example:
+- `cd ".../BVHView/"`
+- `bvhview.exe --bvh="./samples/genea/trn_2023_v0_000_main-agent.bvh" --wav="./samples/genea/trn_2023_v0_000_main-agent.wav"`
+
+### Linux
+
+Not tested.
+
+# BVHView (original description)
 
 BVHView is a simple [.bvh animation file format](https://research.cs.wisc.edu/graphics/Courses/cs-838-1999/Jeff/BVH.html) viewer built using [raylib](https://www.raylib.com/).
 
