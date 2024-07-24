@@ -31,7 +31,7 @@ Args:
 
 CLI example:
 - `cd ".../BVHView/"`
-- `bvhview.exe --bvh="./samples/genea/trn_2023_v0_000_main-agent.bvh" --wav="./samples/genea/trn_2023_v0_000_main-agent.wav"`
+- `./bvhview.exe --bvh="./samples/genea/trn_2023_v0_000_main-agent.bvh" --wav="./samples/genea/trn_2023_v0_000_main-agent.wav"`
 
 ### Linux
 
