@@ -56,6 +56,8 @@ bvhview: bvhview.c additions.c
 	mkdir -p build
 	cp -r assets build/
 	cp -r samples build/
+	cp example.ps1 build/
+	cp example-with-audio.ps1 build/
 	$(CC) -o build/$@$(EXT) bvhview.c additions.c $(CFLAGS) $(LIBS)
 
 clean:
