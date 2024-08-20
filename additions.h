@@ -1,3 +1,6 @@
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "raylib.h"
 
 // Function specifiers in case library is build/used as a shared library (Windows)
@@ -26,3 +29,21 @@ BVHA bool BVHALoadCharacterModelFromFile(CharacterModel* characterModel, const c
 BVHA void BVHAUnloadCharacterModel(CharacterModel* characterModel);
 BVHA bool boneExistsInModel(const char* boneName, const Model* model);
 BVHA void SetAudioTimeInSeconds(Sound* audio, float seconds);
+
+// FFmpeg
+
+#define FFMPEG_COMMAND_BUFFER_SIZE 512
+
+typedef struct
+{
+    int width;
+    int height;
+    int framerate;
+    FILE* pipeHandle;
+    char outputPath[_MAX_PATH];
+} FFmpegPipe;
+
+BVHA bool OpenFFmpegPipe(FFmpegPipe* pipe);
+BVHA void WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image);
+BVHA void CloseFFmpegPipe(FFmpegPipe* pipe);
+BVHA void FreeFFmpegPipe(FFmpegPipe* pipe);
