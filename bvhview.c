@@ -29,6 +29,8 @@
 #include <float.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "raylib.h"
 #include "rcamera.h"
@@ -3983,6 +3985,9 @@ typedef struct {
 
     GuiWindowFileDialogState fileDialogState;
 
+    FFmpegPipe ffmpeg;
+    bool recordMode;
+
     char errMsg[1280];
 
 } ApplicationState;
@@ -4619,6 +4624,15 @@ static void ApplicationUpdate(void* voidApplicationState)
     // Done
 
     EndDrawing();
+
+    // Capture screenshot
+
+    if (app->recordMode)
+    {
+        Image image = LoadImageFromScreen();
+        WriteImageToFFmpegPipe(&app->ffmpeg, &image);
+        UnloadImage(image);
+    }
 }
 
 //----------------------------------------------------------------------------------
@@ -4637,7 +4651,43 @@ int main(int argc, char** argv)
     app.argv = argv;    
     app.screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
     app.screenHeight = ArgInt(argc, argv, "screenHeight", 720);
-    
+
+    // Init ffmpeg recording
+
+    FFmpegPipe ffmpeg;
+    ffmpeg.width = app.screenWidth;
+    ffmpeg.height = app.screenHeight;
+    ffmpeg.framerate = 30;
+
+    if (_fullpath(ffmpeg.outputPath, GetApplicationDirectory(), _MAX_PATH) != NULL)
+    {
+        // Directory
+
+        strcat(ffmpeg.outputPath, "render\\");
+
+        struct stat st = {0};
+        if (stat(ffmpeg.outputPath, &st) == -1) {
+            #ifdef __linux__
+                mkdir(ffmpeg.outputPath, 777);
+            #else
+                _mkdir(ffmpeg.outputPath);
+            #endif
+        }
+
+        // Filename
+
+        strcat(ffmpeg.outputPath, "hehe.mp4");
+    }
+
+    // Init recording
+
+    app.recordMode = false;
+    app.ffmpeg = ffmpeg;
+    if (app.recordMode)
+    {
+        OpenFFmpegPipe(&app.ffmpeg);
+    }
+
     // Init Window
 
     SetConfigFlags(FLAG_VSYNC_HINT);
@@ -4751,6 +4801,8 @@ int main(int argc, char** argv)
     UnloadModel(app.capsuleModel);
     UnloadModel(app.groundPlaneModel);
     UnloadShader(app.shader);
+
+    FreeFFmpegPipe(&app.ffmpeg);
 
     CloseWindow();
 
