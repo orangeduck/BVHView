@@ -38,6 +38,8 @@
 #define GUI_WINDOW_FILE_DIALOG_IMPLEMENTATION
 #include "../examples/custom_file_dialog/gui_window_file_dialog.h"
 #define RAYGUI_IMPLEMENTATION
+
+#undef TRACELOG // avoid redefinition warning
 #include "raygui.h"
 
 #include "additions.h"
@@ -49,6 +51,7 @@
 
 #ifdef _WIN32
 #define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
+#undef PATH_MAX
 #define PATH_MAX _MAX_PATH
 #endif
 
@@ -848,30 +851,6 @@ static inline void CharacterModelInit(CharacterModel* model)
 static inline void CharacterModelFree(CharacterModel* model)
 {
     BVHAUnloadCharacterModel(model);
-}
-
-static BoneInfo convertBVHJointToBoneInfo(BVHJointData* joint)
-{
-    BoneInfo bone;
-    strncpy(bone.name, joint->name, sizeof(bone.name));
-    bone.parent = joint->parent;
-    return bone;
-}
-
-static char** getCommonBoneNames(const BVHData* bvhData, const Model* model, int* commonBoneCount)
-{
-    char** commonBoneNames = malloc(sizeof(char*) * bvhData->jointCount);
-    *commonBoneCount = 0;
-
-    for (int i = 0; i < bvhData->jointCount; ++i) {
-        if (boneExistsInModel(bvhData->joints[i].name, model)) {
-            commonBoneNames[*commonBoneCount] = malloc(sizeof(char) * (strlen(bvhData->joints[i].name) + 1));
-            strcpy(commonBoneNames[*commonBoneCount], bvhData->joints[i].name);
-            (*commonBoneCount)++;
-        }
-    }
-
-    return commonBoneNames;
 }
 
 static ModelAnimation BVHToModelAnimation(const BVHData* bvhData, const Model* model)
@@ -3804,8 +3783,8 @@ static inline void GuiCharacterData(
             characterData->active = i;
             ScrubberSettingsClamp(scrubberSettings, characterData);
             
-            char windowTitle[512];
-            snprintf(windowTitle, 512, "%s - BVHView", characterData->filePaths[characterData->active]);
+            char windowTitle[600];
+            snprintf(windowTitle, 600, "%s - BVHView", characterData->filePaths[characterData->active]);
             SetWindowTitle(windowTitle);
         }
 
@@ -4004,7 +3983,7 @@ typedef struct {
 
     GuiWindowFileDialogState fileDialogState;
 
-    char errMsg[512];
+    char errMsg[1280];
 
 } ApplicationState;
 
@@ -4019,8 +3998,8 @@ static void ApplicationUpdate(void* voidApplicationState)
     {
         if (IsFileExtension(app->fileDialogState.fileNameText, ".bvh"))
         {
-            char fileNameToLoad[512];
-            snprintf(fileNameToLoad, 512, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
+            char fileNameToLoad[2048];
+            snprintf(fileNameToLoad, 2048, "%s/%s", app->fileDialogState.dirPathText, app->fileDialogState.fileNameText);
 
             Sound* audio = NULL;
             if (CharacterDataLoadFromFile(&app->characterData, &app->characterModel.model, audio, fileNameToLoad, app->errMsg, 512))
@@ -4031,14 +4010,14 @@ static void ApplicationUpdate(void* voidApplicationState)
                 ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
                 ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
                 
-                char windowTitle[512];
-                snprintf(windowTitle, 512, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
+                char windowTitle[600];
+                snprintf(windowTitle, 600, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
                 SetWindowTitle(windowTitle);
             }
         }
         else
         {
-            snprintf(app->errMsg, 512, "Error: File '%s' is not a BVH file.", app->fileDialogState.fileNameText);
+            snprintf(app->errMsg, 1280, "Error: File '%s' is not a BVH file.", app->fileDialogState.fileNameText);
         }
 
         app->fileDialogState.SelectFilePressed = false;
@@ -4069,8 +4048,8 @@ static void ApplicationUpdate(void* voidApplicationState)
             ScrubberSettingsRecomputeLimits(&app->scrubberSettings, &app->characterData);
             ScrubberSettingsInitMaxs(&app->scrubberSettings, &app->characterData);
 
-            char windowTitle[512];
-            snprintf(windowTitle, 512, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
+            char windowTitle[600];
+            snprintf(windowTitle, 600, "%s - BVHView", app->characterData.filePaths[app->characterData.active]);
             SetWindowTitle(windowTitle);
         }
     }
@@ -4451,8 +4430,6 @@ static void ApplicationUpdate(void* voidApplicationState)
         SetShaderValue(app->shader, app->uniforms.isCapsule, &characterIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.isCharacter, &characterIsCharacter, SHADER_UNIFORM_INT);
 
-        Model* currModel = &app->characterModel;
-
         // Draw one model instance for each animation
         for (int i = 0; i < app->characterData.count; i++)
         {
@@ -4749,8 +4726,8 @@ int main(int argc, char** argv)
         ScrubberSettingsRecomputeLimits(&app.scrubberSettings, &app.characterData);
         ScrubberSettingsInitMaxs(&app.scrubberSettings, &app.characterData);
         
-        char windowTitle[512];
-        snprintf(windowTitle, 512, "%s - BVHView", app.characterData.filePaths[app.characterData.active]);
+        char windowTitle[600];
+        snprintf(windowTitle, 600, "%s - BVHView", app.characterData.filePaths[app.characterData.active]);
         SetWindowTitle(windowTitle);
     }
 
