@@ -47,6 +47,11 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#ifdef _WIN32
+#define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
+#define PATH_MAX _MAX_PATH
+#endif
+
 //----------------------------------------------------------------------------------
 // Profiling
 //----------------------------------------------------------------------------------
@@ -4712,18 +4717,18 @@ int main(int argc, char** argv)
 
     char* argvBvhPath = ArgFind(argc, argv, "bvh");
     char* argvWavPath = ArgFind(argc, argv, "wav");
-    char bvhPathAbsolute[_MAX_PATH];
-    char wavPathAbsolute[_MAX_PATH];
+    char bvhPathAbsolute[PATH_MAX];
+    char wavPathAbsolute[PATH_MAX];
     if (argvBvhPath)
     {
-        if (_fullpath(bvhPathAbsolute, argvBvhPath, _MAX_PATH) != NULL)
+        if (realpath(argvBvhPath, bvhPathAbsolute) != NULL)
         {
             // Try loading audio for animation
 
             Sound* audio = NULL;
             if (argvWavPath)
             {
-                if (_fullpath(wavPathAbsolute, argvWavPath, _MAX_PATH) != NULL)
+                if (realpath(argvWavPath, wavPathAbsolute) != NULL)
                 {
                     audio = malloc(sizeof(Sound));
                     *audio = LoadSound(wavPathAbsolute);
