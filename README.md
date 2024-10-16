@@ -8,8 +8,9 @@ This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) develope
 - [X] Playback BVH animation onto GENEA avatar
 - [X] Add scrubber-synchronized WAV audio
 - [X] Load BVH and WAV via command line args
-- [ ] Add .mp4 recordings using FFMPEG (for automated pipelines)
 - [ ] Add SMPL-X meshes for the BEAT dataset
+- [ ] Add .mp4 recordings using FFMPEG (for automated pipelines)
+- [ ] Add support for multiple animated models in the same scene
 
 (The list could change with time.)
 
