@@ -34,44 +34,61 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
 {
     if (!pipe)
     {
-        fprintf(stderr, "FFmpegPipe is null\n");
-        return false;
-    }
-
-    if (!pipe->outputPath)
-    {
-        fprintf(stderr, "FFmpegPipe output path is null/missing\n");
+        fprintf(stderr, "Error: FFmpegPipe is null\n");
         return false;
     }
 
     char ffmpegCommand[FFMPEG_COMMAND_BUFFER_SIZE];
     snprintf(ffmpegCommand, FFMPEG_COMMAND_BUFFER_SIZE,
-        "ffmpeg -y -f rawvideo -pixel_format rgb24 -video_size %dx%d -framerate %d -i - -vf format=yuv420p %s",
+        "ffmpeg -y -f rawvideo -pixel_format rgba -video_size %dx%d -framerate %d -i - -vf format=yuv420p \"%s\"",
         pipe->width,
         pipe->height,
         pipe->framerate,
         pipe->outputPath
     );
 
-    pipe->pipeHandle = _popen(ffmpegCommand, "w");
-
+    pipe->pipeHandle = _popen(ffmpegCommand, "wb");
     if (!pipe->pipeHandle) {
-        fprintf(stderr, "Failed to open pipe to FFmpeg\n");
+        fprintf(stderr, "Error: Failed to open pipe to FFmpeg\n");
         return false;
     }
 
     return true;
 }
 
-void WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image)
+bool WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image)
 {
-    if (pipe && pipe->pipeHandle && image)
-    {
-        if (pipe->width == image->width && pipe->height == image->height)
-        {
-            fwrite(image->data, 1, image->width * image->height * 3, pipe->pipeHandle);
-        }
+    if (!pipe) {
+        fprintf(stderr, "Error: FFmpeg pipe is null.\n");
+        return false;
     }
+
+    if (!pipe->pipeHandle) {
+        fprintf(stderr, "Error: FFMpeg pipe handle is null.\n");
+        return false;
+    }
+
+    if (!image) {
+        fprintf(stderr, "Error: Image is null.\n");
+        return false;
+    }
+
+    if (pipe->width != image->width || pipe->height != image->height) {
+        fprintf(stderr, "Error: Image dimensions do not match pipe dimensions (%dx%d vs %dx%d).\n",
+                pipe->width, pipe->height, image->width, image->height);
+        return false;
+    }
+
+    if (image->format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8) {
+        fprintf(stderr, "Error: Image data format must be %d but got %d.\n",
+                PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, image->format);
+        return false;
+    }
+
+    const int pixel_size = 4; // bytes
+    const int pixel_count = image->width * image->height;
+    fwrite(image->data, pixel_size, pixel_count, pipe->pipeHandle);
+    return true;
 }
 
 void CloseFFmpegPipe(FFmpegPipe* pipe)
@@ -91,4 +108,6 @@ void FreeFFmpegPipe(FFmpegPipe* pipe) {
     if (pipe->pipeHandle != NULL) {
         CloseFFmpegPipe(pipe);
     }
+
+    pipe = NULL;
 }

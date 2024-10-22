@@ -3971,6 +3971,58 @@ static inline void GuiScrubberSettings(
     settings->events.playbackAtEnd = (frame == settings->frameMax);
 }
 
+
+//----------------------------------------------------------------------------------
+// Recording
+//----------------------------------------------------------------------------------
+
+typedef struct {
+    FFmpegPipe ffmpeg;
+    bool enabled;
+    int fps;
+} RecordingSettings;
+
+
+static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, char** argv)
+{
+    settings->enabled = ArgFlag(argc, argv, "record");
+    if (settings->enabled)
+    {
+        settings->fps = ArgInt(argc, argv, "record_fps", 60);
+
+        // Setup FFMpeg
+        FFmpegPipe ffmpeg;
+        ffmpeg.width = ArgInt(argc, argv, "screenWidth", 1280);
+        ffmpeg.height = ArgInt(argc, argv, "screenHeight", 720);
+        ffmpeg.framerate = settings->fps;
+
+        if (_fullpath(ffmpeg.outputPath, GetApplicationDirectory(), _MAX_PATH) != NULL)
+        {
+            // Directory
+
+            strcat(ffmpeg.outputPath, "render\\");
+
+            struct stat st = {0};
+            if (stat(ffmpeg.outputPath, &st) == -1) {
+                #ifdef __linux__
+                    mkdir(ffmpeg.outputPath, 777);
+                #else
+                    _mkdir(ffmpeg.outputPath);
+                #endif
+            }
+
+            // Filename
+
+            strcat(ffmpeg.outputPath, "render.mp4");
+        }
+
+        settings->ffmpeg = ffmpeg;
+        OpenFFmpegPipe(&settings->ffmpeg);
+    }
+}
+
+
+
 //----------------------------------------------------------------------------------
 // Application
 //----------------------------------------------------------------------------------
@@ -4002,8 +4054,8 @@ typedef struct {
 
     GuiWindowFileDialogState fileDialogState;
 
-    FFmpegPipe ffmpeg;
-    bool recordMode;
+    bool bShouldTerminate;
+    RecordingSettings recording;
 
     char errMsg[1280];
 
@@ -4089,9 +4141,26 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     if (app->scrubberSettings.playing)
     {
-        app->scrubberSettings.playTime += app->scrubberSettings.playSpeed * GetFrameTime();
+        if (app->recording.enabled)
+        {
+            app->scrubberSettings.playTime += 1.0 / app->recording.fps;
+        }
+        else
+        {
+            app->scrubberSettings.playTime += app->scrubberSettings.playSpeed * GetFrameTime();
+        }
+    }
 
-        if (app->scrubberSettings.playTime >= app->scrubberSettings.timeMax)
+    // If end reached...
+
+    if (app->scrubberSettings.playTime >= app->scrubberSettings.timeMax)
+    {
+        if (app->recording.enabled)
+        {
+            // Signal to stop recording and terminate program
+            app->bShouldTerminate = true;
+        }
+        else
         {
             app->scrubberSettings.playTime = (app->scrubberSettings.looping && app->scrubberSettings.timeMax >= 1e-8f) ?
                 fmod(app->scrubberSettings.playTime, app->scrubberSettings.timeMax) + app->scrubberSettings.timeMin :
@@ -4531,7 +4600,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     PROFILE_BEGIN(Gui);
 
-    if (app->renderSettings.drawUI)
+    if (app->renderSettings.drawUI && !app->recording.enabled)
     {
         if (app->fileDialogState.windowActive) { GuiLock(); }
 
@@ -4644,10 +4713,10 @@ static void ApplicationUpdate(void* voidApplicationState)
 
     // Capture screenshot
 
-    if (app->recordMode)
+    if (app->recording.enabled)
     {
         Image image = LoadImageFromScreen();
-        WriteImageToFFmpegPipe(&app->ffmpeg, &image);
+        WriteImageToFFmpegPipe(&app->recording.ffmpeg, &image);
         UnloadImage(image);
     }
 }
@@ -4669,40 +4738,9 @@ int main(int argc, char** argv)
     app.screenWidth = ArgInt(argc, argv, "screenWidth", 1280);
     app.screenHeight = ArgInt(argc, argv, "screenHeight", 720);
 
-    // Init ffmpeg recording
-
-    FFmpegPipe ffmpeg;
-    ffmpeg.width = app.screenWidth;
-    ffmpeg.height = app.screenHeight;
-    ffmpeg.framerate = 30;
-
-    if (_fullpath(ffmpeg.outputPath, GetApplicationDirectory(), _MAX_PATH) != NULL)
-    {
-        // Directory
-
-        strcat(ffmpeg.outputPath, "render\\");
-
-        struct stat st = {0};
-        if (stat(ffmpeg.outputPath, &st) == -1) {
-            #ifdef __linux__
-                mkdir(ffmpeg.outputPath, 777);
-            #else
-                _mkdir(ffmpeg.outputPath);
-            #endif
-        }
-
-        // Filename
-
-        strcat(ffmpeg.outputPath, "hehe.mp4");
-    }
-
-    // Init recording
-    app.recordMode = ArgFlag(argc, argv, "record");
-    app.ffmpeg = ffmpeg;
-    if (app.recordMode)
-    {
-        OpenFFmpegPipe(&app.ffmpeg);
-    }
+    // Recording settings
+    app.bShouldTerminate = false;
+    RecordingSettingsInit(&app.recording, argc, argv);
 
     // Init Window
 
@@ -4802,7 +4840,7 @@ int main(int argc, char** argv)
 #if defined(PLATFORM_WEB)
     emscripten_set_main_loop_arg(ApplicationUpdate, &app, 0, 1);
 #else
-    while (!WindowShouldClose())
+    while (!(WindowShouldClose() || app.bShouldTerminate))
     {
         ApplicationUpdate(&app);
     }
@@ -4818,7 +4856,7 @@ int main(int argc, char** argv)
     UnloadModel(app.groundPlaneModel);
     UnloadShader(app.shader);
 
-    FreeFFmpegPipe(&app.ffmpeg);
+    FreeFFmpegPipe(&app.recording.ffmpeg);
 
     CloseWindow();
 

@@ -44,6 +44,6 @@ typedef struct
 } FFmpegPipe;
 
 BVHA bool OpenFFmpegPipe(FFmpegPipe* pipe);
-BVHA void WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image);
+BVHA bool WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image);
 BVHA void CloseFFmpegPipe(FFmpegPipe* pipe);
 BVHA void FreeFFmpegPipe(FFmpegPipe* pipe);
