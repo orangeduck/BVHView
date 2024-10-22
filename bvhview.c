@@ -460,6 +460,23 @@ static inline char* ArgFind(int argc, char** argv, const char* name)
     return NULL;
 }
 
+// Finds a boolean flag on the command line with the given name (in the format "--flagName") and returns true if present
+static inline bool ArgFlag(int argc, char** argv, const char* name)
+{
+    for (int i = 1; i < argc; i++)
+    {
+        if (strlen(argv[i]) > 3 &&
+          argv[i][0] == '-' &&
+          argv[i][1] == '-' &&
+          strstr(argv[i] + 2, name) == argv[i] + 2)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Parse a float argument from the command line
 static inline float ArgFloat(int argc, char** argv, const char* name, float defaultValue)
 {
@@ -4680,8 +4697,7 @@ int main(int argc, char** argv)
     }
 
     // Init recording
-
-    app.recordMode = false;
+    app.recordMode = ArgFlag(argc, argv, "record");
     app.ffmpeg = ffmpeg;
     if (app.recordMode)
     {
