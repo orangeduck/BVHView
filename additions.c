@@ -1,6 +1,8 @@
 #include "additions.h"
 #include "raylib.h"
 #include "raudio.c"
+#include <errno.h>
+#include <stdio.h>
 
 bool BVHALoadCharacterModelFromFile(CharacterModel* characterModel, const char *fileName)
 {
@@ -47,9 +49,14 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
         pipe->outputPath
     );
 
-    pipe->pipeHandle = popen(ffmpegCommand, "wb");
+#if defined(_WIN32)
+    pipe->pipeHandle = _popen(ffmpegCommand, "wb");
+#else
+    pipe->pipeHandle = popen(ffmpegCommand, "w");
+#endif
+
     if (!pipe->pipeHandle) {
-        fprintf(stderr, "Error: Failed to open pipe to FFmpeg\n");
+        fprintf(stderr, "Error: Failed to open pipe to FFmpeg: %s\n", strerror(errno));
         return false;
     }
 

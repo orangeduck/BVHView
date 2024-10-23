@@ -3996,7 +3996,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
         {
             // Directory
 
-            strcat(ffmpeg.outputPath, "render\\");
+            strcat(ffmpeg.outputPath, "/render");
 
             struct stat st = {0};
             if (stat(ffmpeg.outputPath, &st) == -1) {
@@ -4009,7 +4009,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
 
             // Filename
 
-            strcat(ffmpeg.outputPath, "render.mp4");
+            strcat(ffmpeg.outputPath, "/render.mp4");
         }
 
         settings->ffmpeg = ffmpeg;
