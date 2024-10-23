@@ -4665,40 +4665,43 @@ static void ApplicationUpdate(void* voidApplicationState)
 #endif
 
     // Update audio playback
-    for (int i = 0; i < app->characterData.count; i++)
+    if (IsAudioDeviceReady())
     {
-        Sound* audio = app->characterData.audioData[i];
-        if (audio != NULL)
+        for (int i = 0; i < app->characterData.count; i++)
         {
-            if (app->scrubberSettings.events.scrubberBeingDragged)
+            Sound* audio = app->characterData.audioData[i];
+            if (audio != NULL)
             {
-                if (app->scrubberSettings.events.playbackJumped)
+                if (app->scrubberSettings.events.scrubberBeingDragged)
                 {
-                    PlaySound(*audio);
-                    SetAudioTimeInSeconds(audio, app->scrubberSettings.playTime);
+                    if (app->scrubberSettings.events.playbackJumped)
+                    {
+                        PlaySound(*audio);
+                        SetAudioTimeInSeconds(audio, app->scrubberSettings.playTime);
+                    }
+                    else
+                    {
+                        StopSound(*audio);
+                    }
                 }
                 else
                 {
-                    StopSound(*audio);
-                }
-            }
-            else
-            {
-                if(!IsSoundPlaying(*audio) && app->scrubberSettings.playing)
-                {
-                    PlaySound(*audio);
-                    SetAudioTimeInSeconds(audio, app->scrubberSettings.playTime);
+                    if(!IsSoundPlaying(*audio) && app->scrubberSettings.playing)
+                    {
+                        PlaySound(*audio);
+                        SetAudioTimeInSeconds(audio, app->scrubberSettings.playTime);
+                    }
+
+                    if (IsSoundPlaying(*audio) && !app->scrubberSettings.playing)
+                    {
+                        StopSound(*audio);
+                    }
                 }
 
-                if (IsSoundPlaying(*audio) && !app->scrubberSettings.playing)
+                if (app->scrubberSettings.events.playbackAtEnd)
                 {
                     StopSound(*audio);
                 }
-            }
-
-            if (app->scrubberSettings.events.playbackAtEnd)
-            {
-                StopSound(*audio);
             }
         }
     }
