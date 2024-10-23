@@ -13,4 +13,6 @@
     #define PATH_MAX _MAX_PATH
 #endif
 
+#define WAIT_FOR_INPUT_ON_EXIT false // Useful to inspect console window output before it closes
+
 #endif

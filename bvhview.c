@@ -4856,5 +4856,10 @@ int main(int argc, char** argv)
 
     CloseWindow();
 
+#if WAIT_FOR_INPUT_ON_EXIT
+    printf("Press Enter...");
+    getchar();
+#endif
+
     return 0;
 }
