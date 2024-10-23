@@ -51,11 +51,7 @@
 #include <emscripten/emscripten.h>
 #endif
 
-#ifdef _WIN32
-#define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
-#undef PATH_MAX
-#define PATH_MAX _MAX_PATH
-#endif
+#include "common.h"
 
 //----------------------------------------------------------------------------------
 // Profiling
@@ -3996,7 +3992,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
         ffmpeg.height = ArgInt(argc, argv, "screenHeight", 720);
         ffmpeg.framerate = settings->fps;
 
-        if (_fullpath(ffmpeg.outputPath, GetApplicationDirectory(), _MAX_PATH) != NULL)
+        if (realpath(GetApplicationDirectory(), ffmpeg.outputPath) != NULL)
         {
             // Directory
 
@@ -4729,7 +4725,7 @@ int main(int argc, char** argv)
 {
     PROFILE_INIT();
     PROFILE_TICKERS_INIT();
-    
+
     // Init Application State
     
     ApplicationState app;

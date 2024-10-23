@@ -47,7 +47,7 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
         pipe->outputPath
     );
 
-    pipe->pipeHandle = _popen(ffmpegCommand, "wb");
+    pipe->pipeHandle = popen(ffmpegCommand, "wb");
     if (!pipe->pipeHandle) {
         fprintf(stderr, "Error: Failed to open pipe to FFmpeg\n");
         return false;
@@ -95,7 +95,7 @@ void CloseFFmpegPipe(FFmpegPipe* pipe)
 {
     if (pipe && pipe->pipeHandle)
     {
-        _pclose(pipe->pipeHandle);
+        pclose(pipe->pipeHandle);
         pipe->pipeHandle = NULL;
     }
 }

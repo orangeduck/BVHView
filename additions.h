@@ -3,6 +3,8 @@
 
 #include "raylib.h"
 
+#include "common.h"
+
 // Function specifiers in case library is build/used as a shared library (Windows)
 // NOTE: Microsoft specifiers to tell compiler that symbols are imported/exported from a .dll
 #if defined(_WIN32)
@@ -40,7 +42,7 @@ typedef struct
     int height;
     int framerate;
     FILE* pipeHandle;
-    char outputPath[_MAX_PATH];
+    char outputPath[PATH_MAX];
 } FFmpegPipe;
 
 BVHA bool OpenFFmpegPipe(FFmpegPipe* pipe);
