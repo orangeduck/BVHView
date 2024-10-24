@@ -4742,12 +4742,20 @@ int main(int argc, char** argv)
     RecordingSettingsInit(&app.recording, argc, argv);
 
     // Init Window
-
-    SetConfigFlags(FLAG_VSYNC_HINT);
+    if (app.recording.enabled)
+    {
+        // Render as fast as possible
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        SetTargetFPS(999);
+    }
+    else
+    {
+        SetConfigFlags(FLAG_VSYNC_HINT);
+        SetTargetFPS(60);
+    }
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(app.screenWidth, app.screenHeight, "BVHView");
     InitAudioDevice();
-    SetTargetFPS(60);
 
     // Camera
 
