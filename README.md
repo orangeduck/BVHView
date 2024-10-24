@@ -20,7 +20,7 @@ This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) develope
 
 Used to render window, GUI, and OpenGL graphics.
 
-1. Refer to the [original instructions](https://github.com/orangeduck/BVHView).
+1. Refer to the [original BVHView instructions](https://github.com/orangeduck/BVHView).
 
 ### cwalk
 
@@ -30,9 +30,15 @@ Convenience library for manipulating system paths.
 2. Copy `cwalk.h` and `cwalk.c` to the `external` folder in this repository.
 3. The Makefile will handle the rest when you start building.
 
+### FFmpeg
+
+Used to stream framebuffer data from raylib for recording videos.
+
+1. Refer to the [original FFmpeg instructions](https://www.ffmpeg.org/download.html).
+
 ## Building
 
-Refer to the [original instructions](https://github.com/orangeduck/BVHView).
+Refer to the [original BVHView instructions](https://github.com/orangeduck/BVHView).
 
 ## Using
 
@@ -53,6 +59,15 @@ CLI example:
 ### Linux
 
 Not tested.
+
+### Args
+
+- `--bvh` : todo
+- `--wav` : todo
+- `--record` : todo
+- `--record_fps` : todo
+- `--record_out_dir` : todo
+- `--record_out_name` : todo
 
 # BVHView (original description)
 
