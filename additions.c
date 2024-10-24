@@ -1,6 +1,7 @@
 #include "additions.h"
 #include "raylib.h"
 #include "raudio.c"
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 
@@ -36,7 +37,7 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
 {
     if (!pipe)
     {
-        fprintf(stderr, "Error: FFmpegPipe is null\n");
+        fprintf(stderr, "[ERROR - BVHVIEW] FFmpegPipe is null\n");
         return false;
     }
 
@@ -56,7 +57,7 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
 #endif
 
     if (!pipe->pipeHandle) {
-        fprintf(stderr, "Error: Failed to open pipe to FFmpeg: %s\n", strerror(errno));
+        fprintf(stderr, "[ERROR - BVHVIEW] Failed to open pipe to FFmpeg: %s\n", strerror(errno));
         return false;
     }
 
@@ -66,28 +67,28 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
 bool WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image)
 {
     if (!pipe) {
-        fprintf(stderr, "Error: FFmpeg pipe is null.\n");
+        fprintf(stderr, "[ERROR - BVHVIEW] FFmpeg pipe is null.\n");
         return false;
     }
 
     if (!pipe->pipeHandle) {
-        fprintf(stderr, "Error: FFMpeg pipe handle is null.\n");
+        fprintf(stderr, "[ERROR - BVHVIEW] FFMpeg pipe handle is null.\n");
         return false;
     }
 
     if (!image) {
-        fprintf(stderr, "Error: Image is null.\n");
+        fprintf(stderr, "[ERROR - BVHVIEW] Image is null.\n");
         return false;
     }
 
     if (pipe->width != image->width || pipe->height != image->height) {
-        fprintf(stderr, "Error: Image dimensions do not match pipe dimensions (%dx%d vs %dx%d).\n",
+        fprintf(stderr, "[ERROR - BVHVIEW] Image dimensions do not match pipe dimensions (%dx%d vs %dx%d).\n",
                 pipe->width, pipe->height, image->width, image->height);
         return false;
     }
 
     if (image->format != PIXELFORMAT_UNCOMPRESSED_R8G8B8A8) {
-        fprintf(stderr, "Error: Image data format must be %d but got %d.\n",
+        fprintf(stderr, "[ERROR - BVHVIEW] Image data format must be %d but got %d.\n",
                 PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, image->format);
         return false;
     }
@@ -117,4 +118,73 @@ void FreeFFmpegPipe(FFmpegPipe* pipe) {
     }
 
     pipe = NULL;
+}
+
+void NormalizePath(char *path) {
+    char target_separator = PATH_SEPARATOR;
+    char other_separator = (target_separator == '/') ? '\\' : '/';
+    for (size_t i = 0; i < strlen(path); i++) {
+        if (path[i] == other_separator) {
+            path[i] = target_separator;
+        }
+    }
+}
+
+void TrimTrailingSpaces(char *str) {
+    size_t len = strlen(str);
+    while (len > 0 && isspace((unsigned char)str[len - 1])) {
+        len--;
+    }
+    str[len] = '\0';
+}
+
+int CreateDirectories(const char *path) {
+    char temp[PATH_MAX];
+
+    // Copy path to temp and ensure null termination
+    snprintf(temp, sizeof(temp), path);
+    TrimTrailingSpaces(temp);
+    size_t len = strlen(temp);
+    size_t start = 0;
+
+    // Normalize the path to use the platform-specific separator
+    NormalizePath(temp);
+
+#ifdef _WIN32
+    // Handle Windows volume (drive letter) if present, e.g., "C:/"
+    if (len > 2 && temp[1] == ':' && (temp[2] == PATH_SEPARATOR || temp[2] == '\0')) {
+        start = 3; // Skip the "C:/" part of the path
+    }
+#endif
+
+    // Iterate over each part of the path and create directories
+    for (size_t i = start; i < len; i++) {
+        if (temp[i] == PATH_SEPARATOR || temp[i] == '\0') {
+            if (i == 0) {
+                continue;
+            }
+
+            // Temporarily end the string to create the directory
+            temp[i] = '\0';
+
+            // Check if the directory exists
+            struct stat st = {0};
+            if (stat(temp, &st) == -1) {
+                mkdir_p(temp);
+                printf("[INFO - BVHVIEW] Created directory: %s\n", temp);
+            }
+
+            // Restore the path separator after creating the directory
+            temp[i] = PATH_SEPARATOR;
+        }
+    }
+
+    // Create the final directory if it's not handled in the loop
+    struct stat st = {0};
+    if (stat(temp, &st) == -1) {
+        mkdir_p(temp);
+        printf("[INFO - BVHVIEW] Created directory: %s\n", temp);
+    }
+
+    return 0;
 }

@@ -31,6 +31,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "external/cwalk.h"
 
 #include "raylib.h"
 #include "rcamera.h"
@@ -3976,6 +3977,7 @@ typedef struct {
     FFmpegPipe ffmpeg;
     bool enabled;
     int fps;
+    char outfile[PATH_MAX];
 } RecordingSettings;
 
 
@@ -3986,31 +3988,59 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
     {
         settings->fps = ArgInt(argc, argv, "record_fps", 60);
 
+        // Setup recording output path
+        char out_directory[PATH_MAX];
+        char out_filename[PATH_MAX];
+        char out_filepath[PATH_MAX * 2];
+        const char* arg_output_dir = ArgStr(argc, argv, "record_out_dir", NULL);
+        const char* arg_output_name = ArgStr(argc, argv, "record_out_name", NULL);
+        const char* arg_bvh = ArgFind(argc, argv, "bvh");
+
+        // Directory
+        if (arg_output_dir != NULL) {
+            if (cwk_path_is_absolute(arg_output_dir)) {
+                cwk_path_get_absolute(arg_output_dir, "", out_directory, sizeof(out_directory));
+            } else {
+                cwk_path_get_absolute(GetApplicationDirectory(), arg_output_dir, out_directory, sizeof(out_directory));
+            }
+        } else {
+            cwk_path_get_absolute(GetApplicationDirectory(), "output/video", out_directory, sizeof(out_directory));
+        }
+
+        // Filename
+        if (arg_output_name != NULL) {
+            cwk_path_change_extension(arg_output_name, ".mp4", out_filename, sizeof(out_filename));
+        } else if (arg_bvh != NULL) {
+            const char* basename;
+            size_t basename_length;
+            cwk_path_get_basename(arg_bvh, &basename, &basename_length);
+            if (basename != NULL) {
+                char new_basename[PATH_MAX];
+                cwk_path_change_extension(basename, ".mp4", new_basename, sizeof(new_basename));
+                snprintf(out_filename, sizeof(out_filename), "%.*s", (int)basename_length, new_basename);
+            } else {
+                snprintf(out_filename, sizeof(out_filename), "render.mp4");
+            }
+        } else {
+            snprintf(out_filename, sizeof(out_filename), "render.mp4");
+        }
+
+        // Full path
+        cwk_path_join(out_directory, out_filename, out_filepath, sizeof(out_filepath));
+        printf("[INFO - BVHVIEW] FFMpeg recording output path: %s\n", out_filepath);
+
+        // Create path if missing
+        struct stat st = {0};
+        if (stat(out_directory, &st) == -1) {
+            CreateDirectories(out_directory);
+        }
+
         // Setup FFMpeg
         FFmpegPipe ffmpeg;
         ffmpeg.width = ArgInt(argc, argv, "screenWidth", 1280);
         ffmpeg.height = ArgInt(argc, argv, "screenHeight", 720);
         ffmpeg.framerate = settings->fps;
-
-        if (realpath(GetApplicationDirectory(), ffmpeg.outputPath) != NULL)
-        {
-            // Directory
-
-            strcat(ffmpeg.outputPath, "/render");
-
-            struct stat st = {0};
-            if (stat(ffmpeg.outputPath, &st) == -1) {
-                #ifdef __linux__
-                    mkdir(ffmpeg.outputPath, 777);
-                #else
-                    _mkdir(ffmpeg.outputPath);
-                #endif
-            }
-
-            // Filename
-
-            strcat(ffmpeg.outputPath, "/render.mp4");
-        }
+        snprintf(ffmpeg.outputPath, sizeof(ffmpeg.outputPath), out_filepath);
 
         settings->ffmpeg = ffmpeg;
         OpenFFmpegPipe(&settings->ffmpeg);
@@ -4728,6 +4758,12 @@ int main(int argc, char** argv)
 {
     PROFILE_INIT();
     PROFILE_TICKERS_INIT();
+
+#if defined(_WIN32)
+    cwk_path_set_style(CWK_STYLE_WINDOWS);
+#else
+    cwk_path_set_style(CWK_STYLE_UNIX);
+#endif
 
     // Init Application State
     

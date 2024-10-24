@@ -49,3 +49,5 @@ BVHA bool OpenFFmpegPipe(FFmpegPipe* pipe);
 BVHA bool WriteImageToFFmpegPipe(FFmpegPipe* pipe, Image* image);
 BVHA void CloseFFmpegPipe(FFmpegPipe* pipe);
 BVHA void FreeFFmpegPipe(FFmpegPipe* pipe);
+
+int CreateDirectories(const char *path);
