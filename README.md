@@ -14,9 +14,25 @@ This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) develope
 
 (The list could change with time.)
 
+## Dependencies
+
+### Raylib
+
+Used to render window, GUI, and OpenGL graphics.
+
+1. Refer to the [original instructions](https://github.com/orangeduck/BVHView).
+
+### cwalk
+
+Convenience library for manipulating system paths.
+
+1. Download `include/cwalk.h` and `src/cwalk.c` from [here](https://github.com/likle/cwalk).
+2. Copy `cwalk.h` and `cwalk.c` to the `external` folder in this repository.
+3. The Makefile will handle the rest when you start building.
+
 ## Building
 
-Please follow the original BVHView build instructions. I work on Windows so Linux has not been tested. If there are build issues, or you have recommendations, please make a GitHub issue or contact me by email: tnikolov@hotmail.com.
+Refer to the [original instructions](https://github.com/orangeduck/BVHView).
 
 ## Using
 

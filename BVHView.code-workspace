@@ -16,7 +16,9 @@
 			"algorithm": "c",
 			"type_traits": "c",
 			"xtr1common": "c",
-			"gui_window_file_dialog.h": "c"
+			"gui_window_file_dialog.h": "c",
+			"ctype.h": "c",
+			"cwalk.h": "c"
 		}
 	}
 }
