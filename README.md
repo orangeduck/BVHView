@@ -2,7 +2,9 @@
 
 This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) developed by [Daniel Holden](https://theorangeduck.com/). This BVHView version has been developed for the [GENEA Leaderboard](https://genea-workshop.github.io/leaderboard/) research project.
 
-## Roadmap
+## Roadmap & features
+
+The features below target the command line usage of BVHView. If a feature is "checked", it *does not guarantee* that the feature will be properly implemented in the GUI.
 
 - [x] Add textured mesh for GENEA avatar
 - [X] Playback BVH animation onto GENEA avatar
@@ -12,6 +14,7 @@ This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) develope
 - [X] Add .mp4 video recordings using FFMPEG (for automated pipelines)
 - [ ] Add audio recording to .mp4 videos
 - [ ] Add support for multiple animated models in the same scene
+- [X] Load custom meshes (.gltf)
 
 (The list could change with time.)
 
