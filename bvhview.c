@@ -860,18 +860,31 @@ static inline int BVHDataAddJoint(BVHData* bvh)
 //----------------------------------------------------------------------------------
 static inline bool CharacterModelInit(CharacterModel* model, int argc, char** argv)
 {
+    // Find required arg (should it be default?)
     const char* arg_mesh = ArgStr(argc, argv, "mesh", NULL);
     if (arg_mesh == NULL) {
         fprintf(stderr, "[ERROR - BVHVIEW] The `--mesh` argument is required!\n");
         return false;
     }
 
+    // Ensure ends with ".gltf" (case insensitive)
     const char *ext = strrchr(arg_mesh, '.');
     if (!ext || strcasecmp(ext, ".gltf") != 0) {
         fprintf(stderr, "[ERROR - BVHVIEW] The `--mesh` argument must specify a `.gltf` file!\n");
         return false;
     }
 
+    // Check if file exists
+    FILE *file = fopen(arg_mesh, "r");
+    if (file == NULL) {
+        const char* arg_mesh_absolute[PATH_MAX];
+        cwk_path_get_absolute(GetApplicationDirectory(), arg_mesh, arg_mesh_absolute, sizeof(arg_mesh_absolute));
+        fprintf(stderr, "[ERROR - BVHVIEW] The specified mesh file does not exist: %s\n", arg_mesh_absolute);
+        return false;
+    }
+    fclose(file);
+
+    // Load the mesh
     if (!BVHALoadCharacterModelFromFile(model, arg_mesh)) {
         fprintf(stderr, "[ERROR - BVHVIEW] Could not load mesh from file.\n");
         return false;
