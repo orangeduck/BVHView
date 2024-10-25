@@ -44,15 +44,13 @@
                 "--bvh=\"./samples/genea/trn_2023_v0_057_main-agent.bvh\"",
                 "--wav=\"./samples/genea/trn_2023_v0_057_main-agent.wav\"",
                 "--record",
-                "--record_fps=30"],
-            // Linux: ./bvhview --bvh="./samples/genea/trn_2023_v0_057_main-agent.bvh" --wav="./samples/genea/trn_2023_v0_057_main-agent.wav"
+                "--record_fps=30",
+                "--record_out_dir=./output/test",
+                "--record_out_name=test.mp4",
+            ],
             "preLaunchTask": "Build BVHView",
             "miDebuggerPath": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\mingw64\\bin\\gdb.exe",
-            "logging": {
-                "trace": true,
-                "traceResponse": true,
-                "engineLogging": true
-            }
+            "externalConsole": true
         }
     ]
 }

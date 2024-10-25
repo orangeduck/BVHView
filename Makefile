@@ -2,7 +2,7 @@
 PLATFORM ?= PLATFORM_DESKTOP
 
 # DEBUG, RELEASE
-BUILD_MODE ?= RELEASE
+BUILD_MODE ?= DEBUG
 
 # true, false
 INCLUDE_CONSOLE ?= true
@@ -15,7 +15,7 @@ endif
 DEFINES = -D _DEFAULT_SOURCE -D RAYLIB_BUILD_MODE=$(BUILD_MODE) -D $(PLATFORM)
 PLATFORM_OS ?= $(shell uname)
 
-ifeq ($(PLATFORM),PLATFORM_DESKTOP)
+ifeq ($(PLATFORM), PLATFORM_DESKTOP)
     
     CC = gcc
     
@@ -27,7 +27,7 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         ifeq ($(BUILD_MODE),RELEASE)
             CFLAGS ?= $(DEFINES) -Wall -Wno-format-truncation -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR)
         else
-            CFLAGS ?= $(DEFINES) -Wall -Wno-format-truncation -g $(INCLUDE_DIR) $(LIBRARY_DIR) -ggdb
+            CFLAGS ?= $(DEFINES) -Wall -Wno-format-truncation -pg $(INCLUDE_DIR) $(LIBRARY_DIR) -ggdb
         endif
         LIBS = -lraylib -lGL -lm
     endif
@@ -40,7 +40,7 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         ifeq ($(BUILD_MODE),RELEASE)
             CFLAGS ?= bvhview.res $(DEFINES) -Wall $(MWINDOWS_FLAG) -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR)
         else
-            CFLAGS ?= bvhview.res $(DEFINES) -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR) -ggdb
+            CFLAGS ?= bvhview.res $(DEFINES) -Wall -pg $(INCLUDE_DIR) $(LIBRARY_DIR) -ggdb
         endif
         LIBS = -lraylib -lopengl32 -lgdi32 -lwinmm
     endif
