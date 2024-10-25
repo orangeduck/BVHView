@@ -19,12 +19,16 @@
             }
         },
         {
-            "name": "BVHView w/Args",
+            "name": "BVHView (bvh, wav)",
             "type": "cppdbg",
             "request": "launch",
             "cwd": "${workspaceFolder}\\build\\BVHView\\",
             "program": "${workspaceFolder}\\build\\BVHView\\BVHView.exe",
-            "args": ["--bvh=\"./samples/genea/trn_2023_v0_057_main-agent.bvh\"", "--wav=\"./samples/genea/trn_2023_v0_057_main-agent.wav\""],
+            "args": [
+                "--bvh=\"./samples/genea/trn_2023_v0_057_main-agent.bvh\"",
+                "--wav=\"./samples/genea/trn_2023_v0_057_main-agent.wav\"",
+                "--mesh=\"./assets/models/genea/GENEA_Model.gltf\"",
+            ],
             // Linux: ./bvhview --bvh="./samples/genea/trn_2023_v0_057_main-agent.bvh" --wav="./samples/genea/trn_2023_v0_057_main-agent.wav"
             "preLaunchTask": "Build BVHView",
             "miDebuggerPath": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\mingw64\\bin\\gdb.exe",
@@ -35,7 +39,20 @@
             }
         },
         {
-            "name": "BVHView Record",
+            "name": "BVHView (mesh)",
+            "type": "cppdbg",
+            "request": "launch",
+            "cwd": "${workspaceFolder}\\build\\BVHView\\",
+            "program": "${workspaceFolder}\\build\\BVHView\\BVHView.exe",
+            "args": [
+                "--mesh=\"./assets/models/genea/GENEA_Model.gltf\"",
+            ],
+            "preLaunchTask": "Build BVHView",
+            "miDebuggerPath": "D:\\Files\\50-59 Software\\53 Portable\\01 PortableApps\\PortableApps\\GitPortable\\App\\Git\\mingw64\\bin\\gdb.exe",
+            "externalConsole": true
+        },
+        {
+            "name": "BVHView (record)",
             "type": "cppdbg",
             "request": "launch",
             "cwd": "${workspaceFolder}\\build\\BVHView\\",
