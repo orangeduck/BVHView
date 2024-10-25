@@ -4015,7 +4015,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
     settings->enabled = ArgFlag(argc, argv, "record");
     if (settings->enabled)
     {
-        settings->fps = ArgInt(argc, argv, "record_fps", 60);
+        settings->fps = ArgInt(argc, argv, "record_fps", 30);
 
         // Setup recording output path
         char out_directory[PATH_MAX];
