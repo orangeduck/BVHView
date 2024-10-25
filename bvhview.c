@@ -858,10 +858,20 @@ static inline int BVHDataAddJoint(BVHData* bvh)
 //----------------------------------------------------------------------------------
 // BVHViewer Additions by Teodor Nikolov
 //----------------------------------------------------------------------------------
-static inline void CharacterModelInit(CharacterModel* model)
+static inline bool CharacterModelInit(CharacterModel* model, int argc, char** argv)
 {
-    const char* modelPath = "./assets/GENEA_Model.gltf";
-    BVHALoadCharacterModelFromFile(model, modelPath);
+    const char* arg_mesh = ArgStr(argc, argv, "mesh", NULL);
+    if (arg_mesh == NULL) {
+        fprintf(stderr, "[ERROR - BVHVIEW] The `--mesh` argument is required!\n");
+        return false;
+    }
+
+    if (!BVHALoadCharacterModelFromFile(model, arg_mesh)) {
+        fprintf(stderr, "[ERROR - BVHVIEW] Could not load mesh from file.\n");
+        return false;
+    }
+
+    return true;
 }
 
 static inline void CharacterModelFree(CharacterModel* model)
@@ -4547,14 +4557,21 @@ static void ApplicationUpdate(void* voidApplicationState)
         SetShaderValue(app->shader, app->uniforms.isCapsule, &characterIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.isCharacter, &characterIsCharacter, SHADER_UNIFORM_INT);
 
-        // Draw one model instance for each animation
-        for (int i = 0; i < app->characterData.count; i++)
-        {
-            Vector3 position = {1.0f * i, 0.0f, 0.0f};
-            int frame = app->scrubberSettings.playTime / app->characterData.bvhData[i].frameTime;
-            UpdateModelAnimation(app->characterModel.model, app->characterData.animData[i], frame);
+        if (app->characterData.count == 0) {
+            // No animation, draw character in default pose
+            Vector3 position = {0.0f, 0.0f, 0.0f};
             DrawModel(app->characterModel.model, position, 1.0f, WHITE);
-            break;
+        } else {
+            // Draw character for each animation
+            for (int i = 0; i < app->characterData.count; i++)
+            {
+                Vector3 position = {1.0f * i, 0.0f, 0.0f};
+                int frame = app->scrubberSettings.playTime / app->characterData.bvhData[i].frameTime;
+                UpdateModelAnimation(app->characterModel.model, app->characterData.animData[i], frame);
+                DrawModel(app->characterModel.model, position, 1.0f, WHITE);
+                // @todo Make this work for multiple characters
+                break;
+            }
         }
     }
 
@@ -4832,7 +4849,15 @@ int main(int argc, char** argv)
     app.capsuleModel.materials[0].shader = app.shader;
 
     CharacterDataInit(&app.characterData, argc, argv);
-    CharacterModelInit(&app.characterModel); // Load GENEA model
+
+    // Initialize Character Mesh
+
+    if (!CharacterModelInit(&app.characterModel, argc, argv))
+    {
+        Cleanup(&app);
+        fprintf(stderr, "[ERROR - BVHVIEW] Failed to initialize character model.\n");
+        return -1;
+    };
     app.characterModel.model.materials[0].shader = app.shader;
     app.characterModel.model.materials[1].shader = app.shader;
 
