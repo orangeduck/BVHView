@@ -877,7 +877,7 @@ static inline bool CharacterModelInit(CharacterModel* model, int argc, char** ar
     // Check if file exists
     FILE *file = fopen(arg_mesh, "r");
     if (file == NULL) {
-        const char* arg_mesh_absolute[PATH_MAX];
+        char arg_mesh_absolute[PATH_MAX];
         cwk_path_get_absolute(GetApplicationDirectory(), arg_mesh, arg_mesh_absolute, sizeof(arg_mesh_absolute));
         fprintf(stderr, "[ERROR - BVHVIEW] The specified mesh file does not exist: %s\n", arg_mesh_absolute);
         return false;
@@ -4046,7 +4046,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
             if (basename != NULL) {
                 char new_basename[PATH_MAX];
                 cwk_path_change_extension(basename, ".mp4", new_basename, sizeof(new_basename));
-                snprintf(out_filename, sizeof(out_filename), "%.*s", (int)basename_length, new_basename);
+                snprintf(out_filename, sizeof(out_filename), "%s", new_basename);
             } else {
                 snprintf(out_filename, sizeof(out_filename), "render.mp4");
             }
@@ -4069,7 +4069,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
         ffmpeg.width = ArgInt(argc, argv, "screenWidth", 1280);
         ffmpeg.height = ArgInt(argc, argv, "screenHeight", 720);
         ffmpeg.framerate = settings->fps;
-        snprintf(ffmpeg.outputPath, sizeof(ffmpeg.outputPath), out_filepath);
+        snprintf(ffmpeg.outputPath, sizeof(ffmpeg.outputPath), "%s", out_filepath);
 
         settings->ffmpeg = ffmpeg;
         OpenFFmpegPipe(&settings->ffmpeg);

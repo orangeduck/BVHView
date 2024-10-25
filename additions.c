@@ -142,7 +142,7 @@ int CreateDirectories(const char *path) {
     char temp[PATH_MAX];
 
     // Copy path to temp and ensure null termination
-    snprintf(temp, sizeof(temp), path);
+    snprintf(temp, sizeof(temp), "%s", path);
     TrimTrailingSpaces(temp);
     size_t len = strlen(temp);
     size_t start = 0;
