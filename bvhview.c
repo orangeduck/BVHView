@@ -4069,7 +4069,10 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
         ffmpeg.width = ArgInt(argc, argv, "screenWidth", 1280);
         ffmpeg.height = ArgInt(argc, argv, "screenHeight", 720);
         ffmpeg.framerate = settings->fps;
-        snprintf(ffmpeg.outputPath, sizeof(ffmpeg.outputPath), "%s", out_filepath);
+        int ret = snprintf(ffmpeg.outputPath, sizeof(ffmpeg.outputPath), "%s", out_filepath);
+        if (ret < 0) {
+            printf("[WARN - BVHVIEW] Path copy has been truncated. From: %s To: %s\n", out_filepath, ffmpeg.outputPath);
+        }
 
         settings->ffmpeg = ffmpeg;
         OpenFFmpegPipe(&settings->ffmpeg);
