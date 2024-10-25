@@ -866,6 +866,12 @@ static inline bool CharacterModelInit(CharacterModel* model, int argc, char** ar
         return false;
     }
 
+    const char *ext = strrchr(arg_mesh, '.');
+    if (!ext || strcasecmp(ext, ".gltf") != 0) {
+        fprintf(stderr, "[ERROR - BVHVIEW] The `--mesh` argument must specify a `.gltf` file!\n");
+        return false;
+    }
+
     if (!BVHALoadCharacterModelFromFile(model, arg_mesh)) {
         fprintf(stderr, "[ERROR - BVHVIEW] Could not load mesh from file.\n");
         return false;
