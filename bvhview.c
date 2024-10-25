@@ -4751,6 +4751,26 @@ static void ApplicationUpdate(void* voidApplicationState)
 }
 
 //----------------------------------------------------------------------------------
+// Cleanup before exit
+//----------------------------------------------------------------------------------
+
+static inline void Cleanup(ApplicationState* app)
+{
+    CapsuleDataFree(&app->capsuleData);
+    CharacterDataFree(&app->characterData);
+    CharacterModelFree(&app->characterModel);
+
+    UnloadModel(app->capsuleModel);
+    UnloadModel(app->groundPlaneModel);
+    UnloadShader(app->shader);
+
+    FreeFFmpegPipe(&app->recording.ffmpeg);
+
+    CloseWindow();
+}
+
+
+//----------------------------------------------------------------------------------
 // Main
 //----------------------------------------------------------------------------------
 
@@ -4891,17 +4911,7 @@ int main(int argc, char** argv)
 
     // Unload and finish
 
-    CapsuleDataFree(&app.capsuleData);
-    CharacterDataFree(&app.characterData);
-    CharacterModelFree(&app.characterModel);
-
-    UnloadModel(app.capsuleModel);
-    UnloadModel(app.groundPlaneModel);
-    UnloadShader(app.shader);
-
-    FreeFFmpegPipe(&app.recording.ffmpeg);
-
-    CloseWindow();
+    Cleanup(&app);
 
 #if WAIT_FOR_INPUT_ON_EXIT
     printf("Press Enter...");
