@@ -6,15 +6,15 @@ This repo is a fork of [BVHView](https://github.com/orangeduck/BVHView) develope
 
 The features below target the command line usage of BVHView. If a feature is "checked", it *does not guarantee* that the feature will be properly implemented in the GUI.
 
-- [x] Add textured mesh for GENEA avatar
-- [X] Playback BVH animation onto GENEA avatar
+- [X] Add textured mesh load support (.gltf)
+- [X] Add GENEA avatar mesh
+- [X] Playback BVH animation onto target mesh
 - [X] Add scrubber-synchronized WAV audio
 - [X] Load BVH and WAV via command line args
 - [ ] Add SMPL-X meshes for the BEAT dataset
-- [X] Add .mp4 video recordings using FFMPEG (for automated pipelines)
+- [X] Add .mp4 video recording using FFMPEG
 - [ ] Add audio recording to .mp4 videos
 - [ ] Add support for multiple animated models in the same scene
-- [X] Load custom meshes (.gltf)
 
 (The list could change with time.)
 
