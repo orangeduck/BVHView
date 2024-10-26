@@ -22,7 +22,7 @@ The features below target the command line usage of BVHView. If a feature is "ch
 
 ### Raylib
 
-Used to render window, GUI, and OpenGL graphics.
+Used to open a window, render GUI and graphics (OpenGL), and process user input.
 
 1. Prepare `raylib` (refer to the [original BVHView instructions](https://github.com/orangeduck/BVHView)).
 2. Uncomment `#define SUPPORT_FILEFORMAT_JPG` in `raylib/raylib/src/config.h`
@@ -33,7 +33,7 @@ Used to render window, GUI, and OpenGL graphics.
 
 ### cwalk
 
-Convenience library for manipulating system paths.
+Convenience library for manipulating file paths.
 
 1. Download `include/cwalk.h` and `src/cwalk.c` from [here](https://github.com/likle/cwalk).
 2. Copy `cwalk.h` and `cwalk.c` to the `external` folder in this repository.
@@ -41,7 +41,7 @@ Convenience library for manipulating system paths.
 
 ### FFmpeg
 
-Used to stream framebuffer data from raylib for recording videos.
+Used to record videos by streaming the raylib framebuffer.
 
 1. Refer to the [original FFmpeg instructions](https://www.ffmpeg.org/download.html).
 
@@ -63,8 +63,9 @@ You can find example files in `/samples`.
 
 Most args are optional.
 
-- `--bvh` : Path to a `.bvh` animation data file
-- `--wav` : Path to a `.wav` audio file
+- `--bvh` : Path to a `.bvh` animation data file.
+- `--wav` : Path to a `.wav` audio file.
+- `--mesh` : Path to a `.gltf` mesh. The mesh will be loaded with the default pose if `.bvh` is not specified, otherwise it will be animated.
 - `--record` : Toggle recording of the 3D scene (this hides the window and UI). *Default is disabled.*
 - `--record_fps` : Toggle the FPS at which to record. *Default is 30.*
 - `--record_out_dir` : Specify an absolute or relative path where recordings will be saved. *Default is `output/video` in the working directory.*
