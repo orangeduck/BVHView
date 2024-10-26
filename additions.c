@@ -42,13 +42,24 @@ bool OpenFFmpegPipe(FFmpegPipe* pipe)
     }
 
     char ffmpegCommand[FFMPEG_COMMAND_BUFFER_SIZE];
-    snprintf(ffmpegCommand, FFMPEG_COMMAND_BUFFER_SIZE,
-        "ffmpeg -y -f rawvideo -pixel_format rgba -video_size %dx%d -framerate %d -i - -vf format=yuv420p \"%s\"",
-        pipe->width,
-        pipe->height,
-        pipe->framerate,
-        pipe->outputPath
-    );
+    if (pipe->audioPath[0] == '\0') {
+        snprintf(ffmpegCommand, FFMPEG_COMMAND_BUFFER_SIZE,
+            "ffmpeg -y -f rawvideo -pixel_format rgba -video_size %dx%d -framerate %d -i - -vf format=yuv420p \"%s\"",
+            pipe->width,
+            pipe->height,
+            pipe->framerate,
+            pipe->outputPath
+        );
+    } else {
+        snprintf(ffmpegCommand, FFMPEG_COMMAND_BUFFER_SIZE,
+            "ffmpeg -y -f rawvideo -pixel_format rgba -video_size %dx%d -framerate %d -i - -i \"%s\" -c:v libx264 -vf format=yuv420p -c:a aac -shortest \"%s\"",
+            pipe->width,
+            pipe->height,
+            pipe->framerate,
+            pipe->audioPath,
+            pipe->outputPath
+        );
+    }
 
 #if defined(_WIN32)
     pipe->pipeHandle = _popen(ffmpegCommand, "wb");

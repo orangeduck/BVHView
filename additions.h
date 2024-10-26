@@ -34,7 +34,7 @@ BVHA void SetAudioTimeInSeconds(Sound* audio, float seconds);
 
 // FFmpeg
 
-#define FFMPEG_COMMAND_BUFFER_SIZE 512
+#define FFMPEG_COMMAND_BUFFER_SIZE 1024
 
 typedef struct
 {
@@ -42,6 +42,7 @@ typedef struct
     int height;
     int framerate;
     FILE* pipeHandle;
+    char audioPath[PATH_MAX];
     char outputPath[PATH_MAX];
 } FFmpegPipe;
 

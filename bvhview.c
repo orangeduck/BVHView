@@ -4024,6 +4024,7 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
         const char* arg_output_dir = ArgStr(argc, argv, "record_out_dir", NULL);
         const char* arg_output_name = ArgStr(argc, argv, "record_out_name", NULL);
         const char* arg_bvh = ArgFind(argc, argv, "bvh");
+        const char* arg_wav = ArgFind(argc, argv, "wav");
 
         // Directory
         if (arg_output_dir != NULL) {
@@ -4069,6 +4070,15 @@ static inline void RecordingSettingsInit(RecordingSettings* settings, int argc, 
         ffmpeg.width = ArgInt(argc, argv, "screenWidth", 1280);
         ffmpeg.height = ArgInt(argc, argv, "screenHeight", 720);
         ffmpeg.framerate = settings->fps;
+
+        if (arg_wav != NULL) {
+            if (cwk_path_is_absolute(arg_wav)) {
+                cwk_path_get_absolute(arg_wav, "", ffmpeg.audioPath, sizeof(ffmpeg.audioPath));
+            } else {
+                cwk_path_get_absolute(GetApplicationDirectory(), arg_wav, ffmpeg.audioPath, sizeof(ffmpeg.audioPath));
+            }
+        }
+
         int ret = snprintf(ffmpeg.outputPath, sizeof(ffmpeg.outputPath), "%s", out_filepath);
         if (ret < 0) {
             printf("[WARN - BVHVIEW] Path copy has been truncated. From: %s To: %s\n", out_filepath, ffmpeg.outputPath);
@@ -4734,7 +4744,7 @@ static void ApplicationUpdate(void* voidApplicationState)
 #endif
 
     // Update audio playback
-    if (IsAudioDeviceReady())
+    if (IsAudioDeviceReady() && !app->recording.enabled)
     {
         for (int i = 0; i < app->characterData.count; i++)
         {

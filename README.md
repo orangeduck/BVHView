@@ -13,7 +13,7 @@ The features below target the command line usage of BVHView. If a feature is "ch
 - [X] Load BVH and WAV via command line args
 - [ ] Add SMPL-X meshes for the BEAT dataset
 - [X] Add .mp4 video recording using FFMPEG
-- [ ] Add audio recording to .mp4 videos
+- [X] Add audio recording to .mp4 videos
 - [ ] Add support for multiple animated models in the same scene
 
 (The list could change with time.)

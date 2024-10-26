@@ -60,6 +60,7 @@
             "args": [
                 "--bvh=\"./samples/genea/trn_2023_v0_057_main-agent.bvh\"",
                 "--wav=\"./samples/genea/trn_2023_v0_057_main-agent.wav\"",
+                "--mesh=\"./assets/models/genea/GENEA_Model.gltf\"",
                 "--record",
                 "--record_fps=30",
                 "--record_out_dir=./output/test",
