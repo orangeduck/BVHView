@@ -2943,7 +2943,7 @@ void main()
     vec3 ambient = ambShadow * ambientStrength * lightSkyColor * albedo;
 
     vec3 diffuse = sunShadow * sunStrength * lightSunColor * albedo * sunFactorDiff +
-        groundStrength * lightSkyColor * albedo * groundFactorDiff;
+        groundStrength * lightSkyColor * albedo * groundFactorDiff +
         skyStrength * lightSkyColor * albedo * skyFactorDiff;
 
     float specular = sunShadow * sunStrength * sunFactorSpec + skyStrength * skyFactorSpec;
@@ -3259,7 +3259,7 @@ void RenderSettingsInit(RenderSettings* settings, int argc, char** argv)
     settings->sunAltitude = ArgFloat(argc, argv, "sunAltitude", 0.8f);
     settings->sunColor = ArgColor(argc, argv, "sunColor", (Color){ 253, 255, 232 });
 
-    settings->skyLightStrength = ArgFloat(argc, argv, "skyLightStrength", 0.2f);
+    settings->skyLightStrength = ArgFloat(argc, argv, "skyLightStrength", 0.15f);
     settings->skyColor = ArgColor(argc, argv, "skyColor", (Color){ 174, 183, 190 });
 
     settings->groundLightStrength = ArgFloat(argc, argv, "groundLightStrength", 0.1f);
@@ -4027,7 +4027,7 @@ static void ApplicationUpdate(void* voidApplicationState)
     if (app->renderSettings.drawChecker)
     {
         int groundIsCapsule = 0;
-        Vector3 groundColor = { 1.0f, 1.0f, 1.0f };
+        Vector3 groundColor = { 0.75f, 0.75f, 0.75f };
 
         SetShaderValue(app->shader, app->uniforms.isCapsule, &groundIsCapsule, SHADER_UNIFORM_INT);
         SetShaderValue(app->shader, app->uniforms.objectColor, &groundColor, SHADER_UNIFORM_VEC3);
@@ -4472,3 +4472,4 @@ int main(int argc, char** argv)
 
     return 0;
 }
+
