@@ -294,7 +294,7 @@ static inline Vector3 QuaternionLog(Quaternion q)
     }
     else
     {
-        float halfangle = acosf(Clamp(q.w, -1.0f, 1.0f));
+        float halfangle = atan2f(length, q.w);
         return Vector3Scale((Vector3){ q.x, q.y, q.z }, halfangle / length);
     }
 }
@@ -4472,4 +4472,5 @@ int main(int argc, char** argv)
 
     return 0;
 }
+
 
