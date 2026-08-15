@@ -17,7 +17,7 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         else
             CFLAGS = -D_DEFAULT_SOURCE -DPLATFORM_DESKTOP -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR)
         endif
-        LIBS = -lraylib -framework OpenGL -framework Cocoa  -framework IOKit -framework CoreVideo
+        LIBS = -lraylib -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -framework QuartzCore
     endif
 
     ifeq ($(findstring Linux,$(PLATFORM_OS)),Linux)
@@ -30,18 +30,20 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         else
             CFLAGS ?= $(DEFINES) -Wall -Wno-format-truncation -g $(INCLUDE_DIR) $(LIBRARY_DIR)
         endif
-        LIBS = -lraylib -lGL -lm
+        LIBS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
     endif
     
     ifneq ($(filter MINGW% MSYS%,$(PLATFORM_OS)),)
         EXT = .exe
+        RESOURCE = bvhview.res
+        WINDRES ?= windres
         RAYLIB_DIR = C:/raylib
         INCLUDE_DIR = -I ./ -I $(RAYLIB_DIR)/raylib/src -I $(RAYLIB_DIR)/raygui/src
         LIBRARY_DIR = -L $(RAYLIB_DIR)/raylib/src
         ifeq ($(BUILD_MODE),RELEASE)
-            CFLAGS ?= bvhview.res $(DEFINES) -Wall -mwindows -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR) 
+            CFLAGS ?= $(DEFINES) -Wall -mwindows -D NDEBUG -O3 $(INCLUDE_DIR) $(LIBRARY_DIR)
         else
-            CFLAGS ?= bvhview.res $(DEFINES) -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR)
+            CFLAGS ?= $(DEFINES) -Wall -g $(INCLUDE_DIR) $(LIBRARY_DIR)
         endif
         LIBS = -lraylib -lopengl32 -lgdi32 -lwinmm
     endif
@@ -61,12 +63,15 @@ ifeq ($(PLATFORM),PLATFORM_WEB)
     endif
 endif
 
-.PHONY: all
+.PHONY: all $(RESOURCE)
 
 all: bvhview
 
-bvhview: bvhview.c
-	$(CC) -o $@$(EXT) bvhview.c $(CFLAGS) $(LIBS) 
+bvhview: bvhview.c $(RESOURCE)
+	$(CC) -o $@$(EXT) bvhview.c $(CFLAGS) $(LIBS)
+
+bvhview.res: bvhview.rc bvhview.ico
+	$(WINDRES) -O coff -o $@ $<
 
 clean:
 	rm bvhview$(EXT)
