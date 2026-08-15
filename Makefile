@@ -33,7 +33,7 @@ ifeq ($(PLATFORM),PLATFORM_DESKTOP)
         LIBS = -lraylib -lGL -lm
     endif
     
-    ifeq ($(findstring MINGW,$(PLATFORM_OS)),MINGW)
+    ifneq ($(filter MINGW% MSYS%,$(PLATFORM_OS)),)
         EXT = .exe
         RAYLIB_DIR = C:/raylib
         INCLUDE_DIR = -I ./ -I $(RAYLIB_DIR)/raylib/src -I $(RAYLIB_DIR)/raygui/src

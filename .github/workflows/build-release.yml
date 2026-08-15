@@ -1,0 +1,142 @@
+name: Build release binaries
+
+on:
+  pull_request:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-latest
+            platform: windows
+            architecture: x64
+            archive: bvhview_windows_x64.zip
+            binary: bvhview.exe
+            msystem: MINGW64
+            msys2-packages: git make mingw-w64-x86_64-gcc zip
+            compiler: gcc
+          - name: Windows ARM64
+            runner: windows-11-arm
+            platform: windows
+            architecture: arm64
+            archive: bvhview_windows_arm64.zip
+            binary: bvhview.exe
+            msystem: CLANGARM64
+            msys2-packages: git make mingw-w64-clang-aarch64-gcc zip
+            compiler: clang
+          - name: macOS x64
+            runner: macos-13
+            platform: macos
+            architecture: x64
+            archive: bvhview_macos_x64.zip
+            binary: bvhview
+          - name: macOS ARM64
+            runner: macos-14
+            platform: macos
+            architecture: arm64
+            archive: bvhview_macos_arm64.zip
+            binary: bvhview
+          - name: Linux x64
+            runner: ubuntu-latest
+            platform: linux
+            architecture: x64
+            archive: bvhview_linux_x64.zip
+            binary: bvhview
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            architecture: arm64
+            archive: bvhview_linux_arm64.zip
+            binary: bvhview
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: ${{ matrix.msys2-packages }}
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libxrandr-dev
+
+      - name: Fetch raylib and raygui on Windows
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          mkdir -p /c/raylib
+          git clone --depth 1 https://github.com/raysan5/raylib.git /c/raylib/raylib
+          git clone --depth 1 https://github.com/raysan5/raygui.git /c/raylib/raygui
+
+      - name: Fetch raylib and raygui on Unix
+        if: matrix.platform != 'windows'
+        run: |
+          mkdir -p "$HOME/raylib"
+          git clone --depth 1 https://github.com/raysan5/raylib.git "$HOME/raylib/raylib"
+          git clone --depth 1 https://github.com/raysan5/raygui.git "$HOME/raylib/raygui"
+
+      - name: Build raylib on Windows
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: make -C /c/raylib/raylib/src PLATFORM=PLATFORM_DESKTOP CC=${{ matrix.compiler }}
+
+      - name: Build raylib on Unix
+        if: matrix.platform != 'windows'
+        run: make -C "$HOME/raylib/raylib/src" PLATFORM=PLATFORM_DESKTOP
+
+      - name: Build optimized Windows binary
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: make BUILD_MODE=RELEASE CC=${{ matrix.compiler }}
+
+      - name: Build optimized macOS binary
+        if: matrix.platform == 'macos'
+        run: make BUILD_MODE=RELEASE PLATFORM_OS=Darwin
+
+      - name: Build optimized Linux binary
+        if: matrix.platform == 'linux'
+        run: make BUILD_MODE=RELEASE
+
+      - name: Package Windows binary
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: zip "${{ matrix.archive }}" "${{ matrix.binary }}"
+
+      - name: Package Unix binary
+        if: matrix.platform != 'windows'
+        run: zip "${{ matrix.archive }}" "${{ matrix.binary }}"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
