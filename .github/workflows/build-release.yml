@@ -135,7 +135,7 @@ jobs:
         run: zip "${{ matrix.archive }}" "${{ matrix.binary }}"
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
@@ -151,7 +151,7 @@ jobs:
 
     steps:
       - name: Download release archives
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           pattern: bvhview_*.zip
           path: release-assets
@@ -160,6 +160,7 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release-assets/*.zip --clobber
