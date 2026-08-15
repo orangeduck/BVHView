@@ -4,6 +4,7 @@ bvhview.html
 bvhview.js
 bvhview.wasm
 bvhview.zip
+bvhview.res
 examples/*
 *.log
 *__pycache__*
