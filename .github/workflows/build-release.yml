@@ -37,13 +37,13 @@ jobs:
             msys2-packages: git make mingw-w64-clang-aarch64-gcc zip
             compiler: clang
           - name: macOS x64
-            runner: macos-13
+            runner: macos-15-intel
             platform: macos
             architecture: x64
             archive: bvhview_macos_x64.zip
             binary: bvhview
           - name: macOS ARM64
-            runner: macos-14
+            runner: macos-15
             platform: macos
             architecture: arm64
             archive: bvhview_macos_arm64.zip
@@ -62,7 +62,7 @@ jobs:
             binary: bvhview
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up MSYS2
         if: matrix.platform == 'windows'
@@ -135,7 +135,7 @@ jobs:
         run: zip "${{ matrix.archive }}" "${{ matrix.binary }}"
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
